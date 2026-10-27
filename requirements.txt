@@ -1,0 +1,2 @@
+# Chỉ cần cho engine MIDI (input .mid/.midi). Đường MusicXML chỉ dùng thư viện chuẩn.
+numpy>=1.21
