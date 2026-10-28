@@ -422,7 +422,7 @@ def normalize(notes: Sequence, controls: Optional[Sequence[tuple]] = None, beats
                 if hasattr(n, "tuplet_num"):
                     kw.update(tuplet_num=None, tuplet_type=None, printed=None)
                 out_notes.append(replace(n, **kw))
-        counters["merged"] += before - sum(1 for _ in out_notes if _.hand == hand)
+        counters["merged"] += before - sum(1 for o in out_notes if o.hand == hand)
     out_notes.sort(key=lambda n: (n.start, n.pitch))
 
     # --- the clock: bars and beats from the first bar line to past the last note
@@ -495,12 +495,46 @@ def _meta(kind: int, data: bytes) -> bytes:
     return bytes([0xFF, kind]) + _vlq(len(data)) + data
 
 
-def write_midi(path: str, clean: Clean, key_fifths: int = 0, program: int = 0, flat_velocity: Optional[int] = None) -> int:
+def revoice(clean: Clean, voices: str = "single", chord_end: str = "median", tidy: bool = True):
+    """
+    Voice `clean.notes` again, per hand as they now carry it. Needed after the notes were edited
+    on the clean clock (a note moved to the other hand may overlap that hand's held notes, which
+    a notation program prints as a second voice). Returns (Clean, [(old note, new note)]); a note
+    that lands on a key its hand already plays at that unit is merged away (no pair).
+    """
+    unit = clean.unit
+    rest_min = max(2, round(REST_MIN_BEAT * clean.units_per_beat))
+    per = {RIGHT: {}, LEFT: {}}
+    for n in clean.notes:
+        hand = n.hand or (LEFT if n.pitch < MIDDLE_C else RIGHT)
+        per[hand].setdefault(int(round(n.start / unit)), []).append((n, n.end / unit))
+    counters = {"cut": 0, "rests": 0, "merged": 0, "tidied": 0}
+    pairs = []
+    for hand in (RIGHT, LEFT):
+        for u, ends, ns in _voice(per[hand], voices, chord_end, rest_min, counters, tidy):
+            for n, e in zip(ns, ends):
+                pairs.append((n, replace(n, start=u * unit, end=e * unit, hand=hand,
+                                         track=0 if hand == RIGHT else 1)))
+    pairs.sort(key=lambda p: (p[1].start, p[1].pitch))
+    notes = [new for _, new in pairs]
+    rh = sum(1 for n in notes if n.hand == RIGHT)
+    stats = dict(clean.stats, notes_out=len(notes), right=rh, left=len(notes) - rh)
+    return replace(clean, notes=notes, stats=stats), pairs
+
+
+def write_midi(path: str, clean: Clean, key_fifths: int = 0, program: int = 0,
+               flat_velocity: Optional[int] = None, fingers: Optional[dict] = None) -> int:
     """
     Write `clean` as a format-1 Standard MIDI File: a conductor track (tempo, time signature,
     key), "Right hand" on channel 0 and "Left hand" on channel 1, one voice each. The sustain
     (and other) controllers, if any, go to both hands' channels. Returns the number of notes.
+
+    `fingers` (optional) maps a note's id() to its fingering label ("R3", "L1", "Rg"); each is
+    written as a text event right before that note, in the form midi_loader.read_markers reads
+    (the fingering editor's markers), so an exported score keeps the fingering.
     """
+    if PPQ % clean.units_per_beat:
+        raise ValueError("units_per_beat %d does not divide PPQ %d" % (clean.units_per_beat, PPQ))
     tpu = PPQ // clean.units_per_beat
     tick = lambda t: max(0, int(round(t / clean.unit)) * tpu)
     tempo = int(round(60_000_000 / clean.bpm))
@@ -512,13 +546,18 @@ def write_midi(path: str, clean: Clean, key_fifths: int = 0, program: int = 0, f
     total = 0
     for hand, ch, name in ((RIGHT, 0, b"Right hand"), (LEFT, 1, b"Left hand")):
         ev = [(0, 0, _meta(0x03, name)), (0, 1, bytes([0xC0 | ch, program]))]
-        for n in clean.notes:
+        k = 0                       # each note's marker and its note-on share a tie-break pair,
+        for n in clean.notes:       # so a chord's markers stay with their own notes
             if n.hand != hand:
                 continue
             vel = flat_velocity or max(1, min(127, int(n.velocity)))
             a, b = tick(n.start), max(tick(n.start) + 1, tick(n.end))
             ev.append((b, 0, bytes([0x80 | ch, n.pitch, 0])))
-            ev.append((a, 2, bytes([0x90 | ch, n.pitch, vel])))
+            label = (fingers or {}).get(id(n))
+            if label:
+                ev.append((a, 2 * k + 1, _meta(0x01, str(label).encode("ascii"))))
+            ev.append((a, 2 * k + 2, bytes([0x90 | ch, n.pitch, vel])))
+            k += 1
             total += 1
         for t, c, v in clean.controls:
             ev.append((tick(t), 1, bytes([0xB0 | ch, c, v])))
@@ -527,7 +566,6 @@ def write_midi(path: str, clean: Clean, key_fifths: int = 0, program: int = 0, f
     tmp = path + ".tmp"
     with open(tmp, "wb") as fh:
         fh.write(data)
-    import os
     os.replace(tmp, path)
     return total
 
@@ -553,6 +591,10 @@ def clean_song(song, **options):
     out.quarter_times = [(0.0, 60.0 / clean.bpm)]
     out.pickup_end = clean.pickup_end
     out.cleanup = list(getattr(song, "cleanup", [])) + clean.report
+    # So the app knows this song sits on the cleaned clock, and an editor's
+    # export can write the two-staff MIDI of exactly what it cleaned.
+    out.normalized = True
+    out.clean = clean
     return out
 
 
@@ -766,7 +808,10 @@ def load_midi_input(path: str, reader: str = "auto", threshold: int = MIDDLE_C) 
             if reader == "loader":
                 raise SystemExit("--reader loader: không import được midi_loader.load_song")
         else:
-            song = load_song(path)
+            try:
+                song = load_song(path, normalize=False)     # (normalize được gọi một lần ở dưới, không hai lần)
+            except TypeError:                               # midi_loader cũ chưa có tham số normalize
+                song = load_song(path)
             kf = getattr(song, "key_fifths", None)
             return MidiInput(list(song.notes), list(getattr(song, "raw_controls", None) or []),
                              kf if kf else None, "midi_loader")

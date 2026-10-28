@@ -11,6 +11,10 @@ Tài liệu này ghi lại các thay đổi quan trọng của project.
 - `normalize_piano_musicxml.py` nhận thêm input MIDI (`.mid`/`.midi`) và xuất `.mid` hoặc `.xml`: engine MIDI
   (từ `normalize.py` cũ, đã gộp vào) tìm lưới và tempo từ cách chơi, đặt nốt lên lưới chính xác, tìm ô nhịp và nốt
   lấy đà, mỗi tay một voice. Cần `numpy` (chỉ cho MIDI), thêm `requirements.txt`.
+- Port từ `normalize.py` mới: `revoice(clean, ...)` (voice lại sau khi sửa nốt trên đồng hồ sạch, ví dụ đổi tay,
+  trả về `(Clean, [(nốt cũ, nốt mới)])`); `write_midi(..., fingers={id(note): "R3"})` ghi nhãn ngón tay thành
+  text event ngay trước nốt (định dạng `midi_loader.read_markers` đọc); `write_midi` báo lỗi nếu `units_per_beat`
+  không chia hết PPQ; `clean_song` gắn `out.normalized = True` và `out.clean = clean`.
 - Ghi MusicXML từ MIDI (`write_musicxml`): 2 part, voice 1, tie qua vạch nhịp, dấu hóa theo khóa, tempo ở P1.
 - Reader MIDI có sẵn (không cần `midi_loader`) và bộ theo dõi vị trí hai tay cho file 1 track (`split_hands`);
   `--reader auto` vẫn dùng `midi_loader.load_song` nếu import được.
@@ -42,6 +46,8 @@ Tài liệu này ghi lại các thay đổi quan trọng của project.
   `import normalize_piano_musicxml as normalize` (API `normalize`, `write_midi`, `clean_song`, `Clean` giữ nguyên).
 - Phân tay MusicXML mặc định là `--hand auto` với `--split C4` (trước đây chỉ theo pitch với ngưỡng C5 và `<=`).
   `--threshold` vẫn dùng được như tên cũ của `--split`, nhưng so sánh là `<` ngưỡng.
+- `load_midi_input` gọi `midi_loader.load_song(path, normalize=False)` (project mới normalize mặc định, tránh làm
+  hai lần); `midi_loader` cũ chưa có tham số này thì tự gọi lại không tham số.
 - `--keep-beams` còn nhận để không vỡ lệnh cũ nhưng không có tác dụng.
 - Cập nhật `README.md` và `AGENTS.md` cho khớp code thật (bản cũ mô tả `--hand`, `--keep-ties`... và hàm chưa có).
 - Cập nhật `README.md` với hướng dẫn test tự động.
@@ -49,6 +55,7 @@ Tài liệu này ghi lại các thay đổi quan trọng của project.
 
 ### Fixed
 
+- Engine MIDI: bộ đếm `merged` dùng biến `_` bị che trong generator (đã đổi tên biến).
 - MusicXML: note có `<chord/>` làm thời gian chạy tiếp, nên mọi note sau chord bị lệch và note trong chord bị
   đặt sai chỗ. Chord giờ nằm cùng onset với note trước.
 - MusicXML: nghỉ/nốt có độ dài không ghi được trước đây ghi `<duration>` đúng nhưng `<type>` gần đúng; giờ chia thành

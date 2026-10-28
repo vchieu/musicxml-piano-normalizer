@@ -237,6 +237,20 @@ File MusicXML partwise:
 
 ---
 
+## Dùng như thư viện
+
+```python
+import normalize_piano_musicxml as N
+clean = N.normalize(notes, controls=..., beats_per_bar=4)    # notes có .hand "R"/"L"
+N.write_midi("out.mid", clean, fingers={id(note): "R3"})     # fingers tùy chọn: nhãn ngón thành text event
+N.write_musicxml("out.xml", clean, key_fifths=0)
+clean2, pairs = N.revoice(clean)                             # voice lại sau khi sửa nốt (đổi tay...)
+```
+
+Trong project có `midi_loader`: `N.clean_song(song)` trả về `MidiSong` đã chuẩn hóa.
+
+---
+
 ## Giới hạn
 
 Script ưu tiên **làm sạch và đơn giản hóa**, không bảo tồn mọi chi tiết engraving.
@@ -248,7 +262,7 @@ Có thể mất hoặc đổi:
 - dynamics, pedal, text, lyrics, articulations, directions phức tạp, đổi khóa giữa bài (output luôn Sol/Fa)
 - tempo thứ hai trở đi
 - MIDI: tuplet không được nhận ra (lưới chia đều), cần numpy
-- MusicXML output từ MIDI chưa có pedal (pedal chỉ có trong output `.mid`)
+- MusicXML output từ MIDI chưa có pedal và nhãn ngón (chỉ có trong output `.mid`)
 
 Chưa hỗ trợ: `.mxl` đầu ra, MusicXML -> MIDI, `score-timewise`.
 

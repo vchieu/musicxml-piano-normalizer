@@ -215,7 +215,14 @@ main()
 - `_tidy_len(u, e)` (bước `tidy`, mặc định bật): nốt dài >= 4 đơn vị không kết thúc ở đơn vị lẻ; độ dài hạ về
   giá trị ghi được `STD_LEN`; phần chênh thành nghỉ ngắn. Lý do: phần mềm chấm nhạc làm tròn kết thúc nốt dài
   rồi tách nó sang voice 2 khi một chuỗi 32nd bắt đầu giữa ô lưới. Tắt bằng `--no-tidy`.
-- `write_midi`: 3 track (conductor, Right hand, Left hand), pedal đi theo nốt.
+- `revoice(clean, voices, chord_end, tidy)`: voice lại `clean.notes` theo tay hiện có sau khi nốt bị sửa trên đồng
+  hồ sạch (đổi tay có thể chồng nốt ngân của tay kia). Trả `(Clean, [(nốt cũ, nốt mới)])`; nốt trùng phím bị gộp
+  (không có cặp).
+- `write_midi(..., fingers=None)`: 3 track (conductor, Right hand, Left hand), pedal đi theo nốt. `fingers` ánh xạ
+  `id(note)` -> nhãn ngón ("R3", "L1", "Rg"), ghi thành text event (meta 0x01) ngay trước nốt, đúng dạng
+  `midi_loader.read_markers`. Báo `ValueError` nếu `units_per_beat` không chia hết `PPQ`.
+- `clean_song(song, **options)`: cần `midi_loader` của project; gắn `out.normalized = True`, `out.clean = clean`.
+  Fingering chưa được ghi vào output MusicXML (chỉ `.mid`).
 
 ### Reader MIDI
 
@@ -697,6 +704,7 @@ Mọi heuristic mới phải có test với file mẫu.
 - Chưa thử mở output bằng MuseScore trong môi trường phát triển; cần kiểm tra bằng mắt ô nhịp có nốt ngân + ornament.
 - Chưa validate DTD nghiêm ngặt, chưa ghi `.mxl`, chưa hỗ trợ MusicXML -> MIDI và `score-timewise`.
 - Chưa có chế độ output 1 part 2 staff.
+- Nhãn ngón (`fingers`) chỉ ghi được vào `.mid`, chưa vào MusicXML.
 
 ---
 

@@ -358,3 +358,38 @@ def test_dangling_ties_are_removed():
         '</measure></part>')
     N.sanitize_ties(part)
     assert not part.findall(".//tie") and not part.findall(".//notations")
+
+
+def test_revoice_after_a_note_changes_hand():
+    notes, _ = _piece(bars=6)
+    clean = N.normalize(notes)
+    moved = next(n for n in clean.notes if n.hand == "R")
+    moved.hand, moved.track = "L", 1                   # a note edited onto the left hand
+    again, pairs = N.revoice(clean)
+    assert len(again.notes) <= len(clean.notes) and pairs
+    for hand in "RL":
+        ns = sorted((n for n in again.notes if n.hand == hand), key=lambda n: n.start)
+        starts = sorted({n.start for n in ns})
+        for a, b in zip(starts, starts[1:]):
+            assert max(n.end for n in ns if n.start == a) <= b + 1e-9
+    assert any(old is moved and new.hand == "L" for old, new in pairs)
+
+
+def test_fingering_labels_are_written_before_their_notes(tmp_path):
+    notes, _ = _piece(bars=4)
+    clean = N.normalize(notes)
+    first = next(n for n in clean.notes if n.hand == "R")
+    path = str(tmp_path / "f.mid")
+    N.write_midi(path, clean, fingers={id(first): "R3"})
+    header, chunks = _chunks(open(path, "rb").read())
+    ev = [e for t, b in chunks if t == b"MTrk" for e in _events(b)]
+    texts = [(t, p[1]) for t, k, p in ev if k == "meta" and p[0] == 0x01]
+    assert texts == [(round(first.start / clean.unit) * (N.PPQ // clean.units_per_beat), b"R3")]
+
+
+def test_write_midi_rejects_a_beat_that_does_not_divide_ppq(tmp_path):
+    notes, _ = _piece(bars=4)
+    clean = N.normalize(notes)
+    bad = N.replace(clean, units_per_beat=7)
+    with pytest.raises(ValueError):
+        N.write_midi(str(tmp_path / "x.mid"), bad)
