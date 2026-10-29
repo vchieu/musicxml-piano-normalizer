@@ -3,6 +3,10 @@ output/
 *.normalized.xml
 *.out.xml
 
+# Output sinh ra khi chạy tool trong samples/
+samples/*_clean*.mid
+samples/*_clean*.xml
+
 # Python cache
 __pycache__/
 *.py[cod]

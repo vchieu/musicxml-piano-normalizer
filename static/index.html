@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Piano Normalizer UI</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/opensheetmusicdisplay@1.8.9/build/opensheetmusicdisplay.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/midi-player-js@2.0.17/browser/midiplayer.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/soundfont-player@0.12.0/dist/soundfont-player.min.js"></script>
+
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      margin: 16px;
+      color: #222;
+    }
+
+    h1 {
+      font-size: 20px;
+      margin: 0 0 12px;
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+      gap: 10px;
+      margin: 12px 0;
+    }
+
+    .controls label {
+      display: flex;
+      flex-direction: column;
+      font-size: 13px;
+      gap: 4px;
+    }
+
+    .controls label.check {
+      flex-direction: row;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .hint {
+      font-size: 11px;
+      color: #666;
+    }
+
+    input[type="number"],
+    input[type="text"],
+    select {
+      padding: 4px;
+    }
+
+    button {
+      padding: 8px 14px;
+      margin: 0 8px 8px 0;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      cursor: default;
+      opacity: 0.5;
+    }
+
+    #command,
+    #report,
+    #status {
+      border: 1px solid #ddd;
+      padding: 8px;
+      font-family: ui-monospace, monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+      margin: 10px 0;
+      overflow: auto;
+    }
+
+    #command {
+      background: #f6f6f6;
+    }
+
+    #report {
+      background: #fbfbfb;
+      max-height: 200px;
+    }
+
+    #status {
+      background: #fffbe6;
+      border-color: #e8d98a;
+      min-height: 1em;
+    }
+
+    #status:empty {
+      display: none;
+    }
+
+    .panes {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 12px;
+    }
+
+    .pane {
+      border: 1px solid #ccc;
+      background: white;
+      padding: 8px;
+      overflow: auto;
+      min-height: 240px;
+    }
+
+    .pane h2 {
+      font-size: 14px;
+      margin: 0 0 8px;
+      color: #444;
+    }
+
+    #score-before,
+    #score-after {
+      min-height: 220px;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>Piano Normalizer — nghe thử bản sạch</h1>
+
+  <div>
+    <input type="file" id="file" accept=".mid,.midi,.xml,.musicxml,.mxl" />
+  </div>
+
+  <div class="controls">
+    <label>
+      Số phách / ô nhịp
+      <select id="beats">
+        <option value="2">2</option>
+        <option value="3">3</option>
+        <option value="4" selected>4</option>
+        <option value="6">6</option>
+      </select>
+    </label>
+
+    <label>
+      Split tay (note name)
+      <input type="text" id="split" value="C4" />
+    </label>
+
+    <label>
+      Phân tay (MusicXML)
+      <select id="hand">
+        <option value="auto" selected>auto</option>
+        <option value="staff">staff</option>
+        <option value="pitch">pitch</option>
+      </select>
+    </label>
+
+    <label class="check">
+      <input type="checkbox" id="split_chords" />
+      Tách từng nốt của hợp âm (MusicXML)
+    </label>
+
+    <label>
+      Downbeat
+      <select id="downbeat">
+        <option value="auto" selected>auto</option>
+        <option value="first">first</option>
+      </select>
+    </label>
+
+    <label>
+      Max BPM
+      <input type="number" id="max_bpm" value="130" step="1" min="1" />
+      <span class="hint">MusicXML: engine luôn dùng 90</span>
+    </label>
+
+    <label>
+      LH tối đa nốt / hợp âm
+      <input type="number" id="lh_max" value="0" step="1" min="0" />
+      <span class="hint">0 = không giới hạn (trừ khi bật simplify)</span>
+    </label>
+
+    <label>
+      RH tối đa nốt / hợp âm
+      <input type="number" id="rh_max" value="0" step="1" min="0" />
+      <span class="hint">0 = không giới hạn (trừ khi bật simplify)</span>
+    </label>
+
+    <label>
+      Min duration (giây, chỉ MIDI)
+      <input type="number" id="min_dur" value="0" step="0.01" min="0" />
+      <span class="hint">0 = không lọc nốt ngắn</span>
+    </label>
+
+    <label class="check">
+      <input type="checkbox" id="fine" />
+      --fine (cho phép nửa ô lưới)
+    </label>
+
+    <label class="check">
+      <input type="checkbox" id="drop_ornaments" />
+      --drop-ornaments (bỏ nốt láy)
+    </label>
+
+    <label class="check">
+      <input type="checkbox" id="simplify" />
+      --simplify (LH 3 / RH 1, bỏ láy)
+    </label>
+  </div>
+
+  <div>
+    <button id="apply">Normalize</button>
+    <button id="playPause" disabled>Play</button>
+    <button id="stop" disabled>Stop</button>
+    <button id="downloadXml" disabled>Download .xml</button>
+    <button id="downloadMidi" disabled>Download .mid</button>
+    <button id="copyCommand">Copy command</button>
+  </div>
+
+  <div id="status"></div>
+  <div id="command"></div>
+  <div id="report"></div>
+
+  <div class="panes">
+    <section class="pane" id="pane-before" hidden>
+      <h2>Bản gốc (input MusicXML)</h2>
+      <div id="score-before"></div>
+    </section>
+
+    <section class="pane">
+      <h2>Bản sạch</h2>
+      <div id="score-after"></div>
+    </section>
+  </div>
+
+  <script>
+    "use strict";
+
+    const XML_EXT = [".xml", ".musicxml", ".mxl"];
+    const MIDI_EXT = [".mid", ".midi"];
+
+    let osmdAfter = null;
+    let osmdBefore = null;
+    let lastData = null;
+    let midiPlayer = null;
+    let playbackStarted = false;
+    let playing = false;
+    let audioCtx = null;
+    let instrumentPromise = null;
+    let instrument = null;
+    let audioFailed = false;
+    let activeNotes = new Map();
+    let lastCursorTick = -1;
+
+    function $(id) {
+      return document.getElementById(id);
+    }
+
+    function setStatus(text) {
+      $("status").textContent = text || "";
+    }
+
+    function extOf(name) {
+      const i = (name || "").lastIndexOf(".");
+      return i < 0 ? "" : name.slice(i).toLowerCase();
+    }
+
+    function currentKind() {
+      const fileInput = $("file");
+      const name = fileInput.files.length ? fileInput.files[0].name : "";
+      return XML_EXT.indexOf(extOf(name)) >= 0 ? "xml" : "midi";
+    }
+
+    function num(id) {
+      const v = parseFloat($(id).value);
+      return isNaN(v) ? 0 : v;
+    }
+
+    function positiveInt(id) {
+      const v = parseInt($(id).value, 10);
+      return isNaN(v) || v <= 0 ? null : v;
+    }
+
+    function effectiveMaxBpm(kind) {
+      return kind === "xml" ? 90 : num("max_bpm");
+    }
+
+    function buildCommand() {
+      const kind = currentKind();
+      const parts = kind === "xml"
+        ? ["python", "xml_regrid_piano.py", "input.xml", "clean.xml"]
+        : ["python", "normalize_piano_musicxml.py", "input.mid", "clean.xml"];
+      const beats = parseInt($("beats").value, 10) || 4;
+      const split = ($("split").value || "C4").trim();
+      const maxBpm = effectiveMaxBpm(kind);
+      const defaultBpm = kind === "xml" ? 90 : 130;
+      const minDur = num("min_dur");
+      const lhMax = positiveInt("lh_max");
+      const rhMax = positiveInt("rh_max");
+
+      if (beats !== 4) parts.push("--beats", String(beats));
+      if (split !== "C4") parts.push("--split", split);
+      if (kind === "xml") {
+        if ($("hand").value !== "auto") parts.push("--hand", $("hand").value);
+        if ($("split_chords").checked) parts.push("--split-chords");
+      }
+      if ($("downbeat").value !== "auto") parts.push("--downbeat", $("downbeat").value);
+      if (Math.abs(maxBpm - defaultBpm) > 1e-9) parts.push("--max-bpm", String(maxBpm));
+      if ($("fine").checked) parts.push("--fine");
+      if (minDur > 0) parts.push("--min-dur", String(minDur));
+      if ($("simplify").checked) parts.push("--simplify");
+      if (lhMax !== null) parts.push("--lh-max", String(lhMax));
+      if (rhMax !== null) parts.push("--rh-max", String(rhMax));
+      if ($("drop_ornaments").checked) parts.push("--drop-ornaments");
+
+      const cmd = parts.join(" ");
+      $("command").textContent = cmd;
+      return cmd;
+    }
+
+    function syncKindUi() {
+      const kind = currentKind();
+      const isXml = kind === "xml";
+      $("hand").disabled = !isXml;
+      $("split_chords").disabled = !isXml;
+      $("pane-before").hidden = !isXml;
+      buildCommand();
+    }
+
+    document.querySelectorAll("input, select").forEach(function (el) {
+      el.addEventListener("change", buildCommand);
+      el.addEventListener("input", buildCommand);
+    });
+
+    $("file").addEventListener("change", function () {
+      lastData = null;
+      stopPlayback();
+      $("playPause").disabled = true;
+      $("stop").disabled = true;
+      $("downloadXml").disabled = true;
+      $("downloadMidi").disabled = true;
+      setStatus("");
+      syncKindUi();
+    });
+
+    $("copyCommand").addEventListener("click", async function () {
+      const cmd = buildCommand();
+      try {
+        await navigator.clipboard.writeText(cmd);
+        setStatus("Đã copy command.");
+      } catch (e) {
+        window.prompt("Copy command:", cmd);
+      }
+    });
+
+    function base64ToArrayBuffer(b64) {
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) {
+        bytes[i] = bin.charCodeAt(i);
+      }
+      return bytes.buffer;
+    }
+
+    function downloadBlob(blob, filename) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    }
+
+    $("downloadXml").addEventListener("click", function () {
+      if (!lastData) return;
+      downloadBlob(new Blob([lastData.xml], {
+        type: "application/vnd.recordare.musicxml+xml"
+      }), "clean.xml");
+    });
+
+    $("downloadMidi").addEventListener("click", function () {
+      if (!lastData) return;
+      downloadBlob(new Blob([base64ToArrayBuffer(lastData.midi)], {
+        type: "audio/midi"
+      }), "clean.mid");
+    });
+
+    function osmdClass() {
+      return opensheetmusicdisplay.OpenSheetMusicDisplay ||
+        opensheetmusicdisplay.OSMD;
+    }
+
+    async function renderAfter(xml) {
+      const url = URL.createObjectURL(new Blob([xml], {
+        type: "application/vnd.recordare.musicxml+xml"
+      }));
+      try {
+        if (!osmdAfter) {
+          const OSMD = osmdClass();
+          osmdAfter = new OSMD("score-after", { followCursor: true });
+        }
+        await osmdAfter.load(url);
+        osmdAfter.render();
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    }
+
+    async function renderBefore(file) {
+      const url = URL.createObjectURL(file);
+      try {
+        if (!osmdBefore) {
+          const OSMD = osmdClass();
+          osmdBefore = new OSMD("score-before");
+        }
+        await osmdBefore.load(url);
+        osmdBefore.render();
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    }
+
+    function cursorReset() {
+      try {
+        if (osmdAfter && osmdAfter.cursor) {
+          osmdAfter.cursor.reset();
+          osmdAfter.cursor.show();
+        }
+      } catch (e) { /* OSMD cursor is best-effort */ }
+    }
+
+    function cursorNext() {
+      try {
+        if (osmdAfter && osmdAfter.cursor) osmdAfter.cursor.next();
+      } catch (e) { /* OSMD cursor is best-effort */ }
+    }
+
+    function cursorHide() {
+      try {
+        if (osmdAfter && osmdAfter.cursor) osmdAfter.cursor.hide();
+      } catch (e) { /* OSMD cursor is best-effort */ }
+    }
+
+    function stopNote(midi) {
+      const node = activeNotes.get(midi);
+      if (!node) return;
+      activeNotes.delete(midi);
+      try { node.stop(); } catch (e) { /* already stopped */ }
+    }
+
+    function stopAllNotes() {
+      activeNotes.forEach(function (node) {
+        try { node.stop(); } catch (e) { /* already stopped */ }
+      });
+      activeNotes.clear();
+    }
+
+    async function ensureInstrument() {
+      if (audioFailed) return null;
+      if (typeof Soundfont === "undefined") {
+        audioFailed = true;
+        setStatus("Không tải được soundfont-player từ CDN. Vẫn phát để xem cursor nhưng không có tiếng.");
+        return null;
+      }
+      if (!audioCtx) {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) {
+          audioFailed = true;
+          setStatus("Trình duyệt không hỗ trợ Web Audio: chỉ xem cursor, không nghe được.");
+          return null;
+        }
+        audioCtx = new Ctx();
+      }
+      if (audioCtx.state === "suspended") {
+        try { await audioCtx.resume(); } catch (e) { /* ignore */ }
+      }
+      if (!instrumentPromise) {
+        instrumentPromise = Soundfont.instrument(audioCtx, "acoustic_grand_piano")
+          .then(function (inst) {
+            instrument = inst;
+            return inst;
+          })
+          .catch(function () {
+            audioFailed = true;
+            instrumentPromise = null;
+            setStatus("Không tải được soundfont (cần internet). Vẫn phát để xem cursor nhưng không có tiếng.");
+            return null;
+          });
+      }
+      return instrumentPromise;
+    }
+
+    async function suspendAudio() {
+      if (!audioCtx) return;
+      try { await audioCtx.suspend(); } catch (e) { /* ignore */ }
+    }
+
+    function playNote(midi) {
+      if (!instrument || !audioCtx) return;
+      stopNote(midi);
+      try {
+        const node = instrument.play(midi, audioCtx.currentTime, {
+          duration: 60,
+          gain: 1
+        });
+        activeNotes.set(midi, node);
+      } catch (e) { /* ignore a single bad note */ }
+    }
+
+    function handleMidiEvent(event) {
+      const name = event.name;
+      if (name === "Note on" && event.velocity > 0) {
+        if (event.tick !== lastCursorTick) {
+          lastCursorTick = event.tick;
+          cursorNext();
+        }
+        playNote(event.noteNumber);
+      } else if (name === "Note off" || (name === "Note on" && event.velocity === 0)) {
+        stopNote(event.noteNumber);
+      }
+    }
+
+    function updatePlayButton() {
+      $("playPause").textContent = playing ? "Pause" : "Play";
+      $("playPause").disabled = !lastData;
+      $("stop").disabled = !lastData;
+    }
+
+    function createPlayer() {
+      if (typeof MidiPlayer === "undefined") {
+        setStatus("Không tải được midi-player-js từ CDN: không phát được.");
+        return false;
+      }
+      midiPlayer = new MidiPlayer.Player(handleMidiEvent);
+      midiPlayer.on("endOfFile", function () {
+        playing = false;
+        playbackStarted = false;
+        midiPlayer = null;
+        stopAllNotes();
+        cursorHide();
+        updatePlayButton();
+        suspendAudio();
+      });
+      midiPlayer.loadArrayBuffer(base64ToArrayBuffer(lastData.midi));
+      return true;
+    }
+
+    function stopPlayback() {
+      if (midiPlayer) {
+        try { midiPlayer.stop(); } catch (e) { /* ignore */ }
+        midiPlayer = null;
+      }
+      playing = false;
+      playbackStarted = false;
+      lastCursorTick = -1;
+      stopAllNotes();
+      suspendAudio();
+    }
+
+    $("stop").addEventListener("click", function () {
+      stopPlayback();
+      cursorHide();
+      updatePlayButton();
+    });
+
+    $("playPause").addEventListener("click", async function () {
+      if (!lastData) return;
+      if (playing) {
+        if (midiPlayer) midiPlayer.pause();
+        playing = false;
+        stopAllNotes();
+        suspendAudio();
+        updatePlayButton();
+        return;
+      }
+
+      if (!midiPlayer && !createPlayer()) return;
+      if (!playbackStarted) {
+        playbackStarted = true;
+        lastCursorTick = -1;
+        cursorReset();
+      }
+
+      await ensureInstrument();
+      if (audioCtx && audioCtx.state === "suspended") {
+        try { await audioCtx.resume(); } catch (e) { /* ignore */ }
+      }
+      try {
+        midiPlayer.play();
+        playing = true;
+      } catch (e) {
+        setStatus("Không phát được MIDI: " + e.toString());
+        playing = false;
+      }
+      updatePlayButton();
+    });
+
+    async function applyNormalize() {
+      const fileInput = $("file");
+      if (!fileInput.files.length) {
+        setStatus("Chọn file .mid/.midi/.xml/.musicxml/.mxl trước.");
+        return;
+      }
+
+      const file = fileInput.files[0];
+      const kind = currentKind();
+
+      stopPlayback();
+      cursorHide();
+      updatePlayButton();
+      setStatus("Đang xử lý...");
+
+      const form = new FormData();
+      form.append("file", file);
+      form.append("beats", $("beats").value);
+      form.append("split", ($("split").value || "C4").trim());
+      form.append("hand", $("hand").value);
+      form.append("split_chords", $("split_chords").checked ? "true" : "false");
+      form.append("downbeat", $("downbeat").value);
+      form.append("max_bpm", $("max_bpm").value);
+      form.append("fine", $("fine").checked ? "true" : "false");
+      form.append("min_dur", $("min_dur").value);
+      const lhMax = positiveInt("lh_max");
+      const rhMax = positiveInt("rh_max");
+      if (lhMax !== null) form.append("lh_max", String(lhMax));
+      if (rhMax !== null) form.append("rh_max", String(rhMax));
+      form.append("drop_ornaments", $("drop_ornaments").checked ? "true" : "false");
+      form.append("simplify", $("simplify").checked ? "true" : "false");
+
+      let data = null;
+      try {
+        const res = await fetch("/normalize", { method: "POST", body: form });
+        data = await res.json().catch(function () { return null; });
+        if (!res.ok) {
+          const detail = data && data.detail ? data.detail : ("HTTP " + res.status);
+          $("report").textContent = "";
+          setStatus("Lỗi: " + detail);
+          return;
+        }
+      } catch (e) {
+        setStatus("Lỗi mạng: " + e.toString());
+        return;
+      }
+
+      if (!data || !data.xml) {
+        setStatus("Server trả về dữ liệu rỗng.");
+        return;
+      }
+
+      lastData = data;
+      $("command").textContent = data.command || buildCommand();
+      $("report").textContent =
+        "input: " + data.input_kind +
+        " · bpm: " + data.bpm +
+        " · beats: " + data.beats +
+        " · fifths: " + data.key +
+        "\n\nReport:\n" + (data.report || []).join("\n") +
+        "\n\nStats:\n" + JSON.stringify(data.stats, null, 2);
+
+      $("downloadXml").disabled = false;
+      $("downloadMidi").disabled = false;
+
+      try {
+        await renderAfter(data.xml);
+      } catch (e) {
+        setStatus("Không render được bản sạch: " + e.toString());
+        return;
+      }
+
+      if (kind === "xml") {
+        $("pane-before").hidden = false;
+        try {
+          await renderBefore(file);
+        } catch (e) {
+          $("pane-before").hidden = true;
+          setStatus("Không render được bản gốc (.mxl có thể chưa hỗ trợ): " + e.toString());
+        }
+      } else {
+        $("pane-before").hidden = true;
+      }
+
+      setStatus("Xong. Bấm Play để nghe và xem cursor.");
+      updatePlayButton();
+    }
+
+    $("apply").addEventListener("click", applyNormalize);
+
+    syncKindUi();
+  </script>
+</body>
+</html>

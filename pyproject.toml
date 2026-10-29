@@ -1,0 +1,20 @@
+[project]
+name = "musicxml-piano-normalizer"
+version = "0.1.0"
+description = "Chuẩn hóa piano MIDI/MusicXML về 2 tay, 1 voice mỗi tay, và web UI nghe thử"
+readme = "README.md"
+authors = [
+    { name = "vchieu", email = "vchieu05@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.21",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "python-multipart>=0.0.9",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]

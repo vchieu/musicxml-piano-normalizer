@@ -1,0 +1,5 @@
+# Web UI (app.py + static/index.html). CLI độc lập chỉ cần requirements.txt.
+fastapi>=0.115
+uvicorn>=0.30
+python-multipart>=0.0.9
+numpy>=1.21

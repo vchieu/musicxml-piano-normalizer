@@ -34,6 +34,8 @@ Runtime:
 - Đường MusicXML: chỉ thư viện chuẩn Python, đọc/ghi MusicXML partwise, không xử lý `.mxl` nén.
 - Engine MIDI: cần **numpy** (`requirements.txt`; import tùy chọn: thiếu numpy thì chỉ đường MIDI báo lỗi,
   đường MusicXML vẫn chạy).
+- Web UI (`app.py` + `static/index.html`): cần **fastapi**, **uvicorn**, **python-multipart**
+  (`requirements-web.txt` hoặc `uv sync`). CLI vẫn chỉ cần stdlib + numpy.
 - Chạy độc lập được. `midi_loader` của project là tùy chọn: `--reader auto` dùng `midi_loader.load_song` nếu
   import được (lấy hand từ `hand_split` của project), không thì dùng reader có sẵn trong file.
 
@@ -44,18 +46,26 @@ Runtime:
 ```text
 musicxml-piano-normalizer/
 ├── normalize_piano_musicxml.py   # script chính (MIDI + MusicXML)
-├── requirements.txt              # numpy (chỉ cho MIDI)
-├── test_normalize.py             # pytest: engine MIDI, writer MIDI/MusicXML, đường MusicXML
-├── Makefile                      # chạy output/test nhanh
-├── .gitignore                    # bỏ qua output/cache
+├── xml_regrid_piano.py           # MusicXML -> engine MIDI re-grid
+├── app.py                        # FastAPI: POST /normalize, GET /
+├── static/
+│   └── index.html                # UI: OSMD render, phát MIDI, cursor, tải file
+├── requirements.txt              # numpy (CLI)
+├── requirements-web.txt          # fastapi, uvicorn, python-multipart, numpy
+├── pyproject.toml                # metadata + dependencies + dev group (uv)
+├── uv.lock
+├── test_normalize.py             # pytest: engine MIDI, writer, MusicXML, app, xml_regrid
+├── Makefile                      # output/test/web nhanh
+├── .gitignore                    # bỏ qua output/cache, samples/*_clean*
 ├── CHANGELOG.md                  # lịch sử thay đổi
 ├── README.md                     # tài liệu người dùng
 ├── AGENTS.md                     # tài liệu cho AI/dev
 ├── tests/
 │   └── check_output.py           # test cấu trúc output MusicXML
-├── samples/                      # file mẫu
-│   ├── input_tempo180.xml
-│   ├── reference_tempo90.xml
+├── samples/                      # file mẫu (không xóa file lạ trong đây)
+│   ├── Luu_Nien_messy.mid        # MIDI chơi tay, có 32nd vụn
+│   ├── Luu_Nien_messy.musicxml
+│   ├── Luu_Nien_messy_clean.mid
 │   └── piano_messy.xml           # chord, grace, tie, pickup, đổi nhịp, nhiều voice/staff
 └── output/                       # kết quả sinh ra khi chạy
 ```
@@ -93,56 +103,45 @@ phải đổi thành `import normalize_piano_musicxml as normalize` (API `normal
 
 ## 4. Dữ liệu mẫu quan trọng
 
-### `samples/input_tempo180.xml`
+### `samples/Luu_Nien_messy.mid`
+
+MIDI chơi tay thật (khoảng 3 phút). Dùng để test:
+
+- tìm lưới + tempo, quantize, 1 voice mỗi tay
+- mặc định không còn `<type>32nd</type>` (nốt 32nd vụn bị đưa lên ô lưới)
+- `--fine` tái tạo đúng output cũ (byte-for-byte với engine trước thay đổi)
+- reader MIDI, `split_hands`, `estimate_key`
+
+`Luu_Nien_messy.musicxml` và `Luu_Nien_messy_clean.mid` là bản MusicXML/MIDI đi kèm, dùng khi cần
+so sánh tay hoặc làm input MusicXML.
+
+---
+
+### `samples/piano_messy.xml`
 
 Đặc điểm:
 
-- 1 part `P1`
-- 2 staff
-- 1 MIDI channel
-- có nhiều voice:
-  - voice 1
-  - voice 2
-  - voice 5
-  - voice 6
-- có clef change giữa bài
-- có note nằm ở staff tay phải nhưng pitch trầm (`samples/piano_messy.xml` có cả hai ca này)
-- có note nằm ở staff tay trái nhưng pitch cao
+- 1 part `P1`, 2 staff, 1 MIDI channel
+- nhiều voice (1, 2, 5, 6), chord, grace, tie, beam
+- ô nhịp lấy đà, đổi nhịp giữa bài
+- có note ở staff tay phải nhưng pitch trầm, và note ở staff tay trái nhưng pitch cao
 
 Dùng để test:
 
 - tách 1 part 2 staff thành 2 part
 - gộp mọi voice của một tay thành một chuỗi (không chọn "voice chính")
 - chord (`<chord/>`) không làm thời gian chạy tiếp
-- phân tay theo staff/pitch
-- xử lý rest
-- xử lý clef change
+- phân tay theo staff/pitch/part
+- grace, ô nhịp lấy đà, đổi nhịp, `--keep-ties`, `--no-fill-rests`
+- làm input cho `xml_regrid_piano.py` và `app.py`
 
 ---
 
-### `samples/reference_tempo90.xml`
+### `samples/anh-dau-tu-luc-em-di_messy.mid`
 
-Đặc điểm:
-
-- 2 part:
-  - `P1`
-  - `P2`
-- 2 MIDI channel:
-  - channel 1
-  - channel 2
-- mỗi part có voice 1
-- có grace note
-- có tie
-- có beam
-- có part-group brace
-
-Dùng để test:
-
-- input đã có 2 part
-- giữ channel riêng
-- giữ tempo
-- xử lý grace note
-- tie: bỏ mặc định, `--keep-ties` giữ cặp nguyên vẹn (`--keep-beams` không còn tác dụng)
+MIDI thật có nhiều 16th. Dùng để test luật "16th floor": mặc định vẫn giữ ≥ 100 `<type>16th</type>`
+(vì ô lưới là 8th), trong khi `--fine` giữ thêm nửa ô. File này là untracked trên máy dev; test không
+phụ thuộc vào nó.
 
 ---
 
@@ -191,15 +190,25 @@ main()
   ├── parse args, nhận dạng đuôi input/output
   ├── input MIDI  -> run_midi()
   │     ├── load_midi_input()   # midi_loader (auto) hoặc read_midi()
-  │     ├── normalize()         # lưới, tempo, ô nhịp, 1 voice mỗi tay, tidy
+  │     ├── normalize()         # lưới, tempo, ô nhịp, 1 voice mỗi tay, tidy,
+  │     │                       # fine/min_dur/lh_max/rh_max/drop_ornaments
   │     ├── key: từ file, không có thì estimate_key()
   │     └── write_midi()  hoặc  write_musicxml()
-  └── input XML   -> run_musicxml()
-        ├── parse XML, strip_namespaces()
-        ├── với mỗi measure: parse_measure() mỗi part, tách tay theo --threshold
-        ├── build_sequence() cho từng tay (rest, cắt note vào onset kế)
-        └── append_sequence_to_measure() ghi P1/P2, voice 1
+  ├── input XML   -> run_musicxml()
+  │     ├── cảnh báo (stderr) nếu có flag MIDI-only
+  │     ├── parse XML, strip_namespaces()
+  │     ├── với mỗi measure: parse_measure() mỗi part, tách tay theo --split/--hand
+  │     ├── build_sequence() cho từng tay (rest, cắt note vào onset kế)
+  │     └── append_sequence_to_measure() ghi P1/P2, voice 1
+  └── web UI  -> app.normalize()
+        ├── MIDI: load_midi_input() -> normalize() -> write_musicxml() + write_midi()
+        └── XML : xml_regrid.extract_notes_from_musicxml() (đơn vị phách đen)
+                  -> normalize(max_bpm=90) -> write_musicxml() + write_midi()
 ```
+
+`xml_regrid_piano.py` dùng chung engine: nốt đưa vào theo đơn vị phách đen, `--max-bpm 90` làm engine
+chọn 1 beat = 1 phách đen; `clean.bpm` sau đó được ghi đè bằng `--tempo-mark` (lấy từ input) chỉ để ghi
+tempo marking. `--min-dur` của script này tính bằng phách đen.
 
 ---
 
@@ -207,17 +216,30 @@ main()
 
 ### Engine MIDI
 
-- `normalize(notes, controls, beats_per_bar, max_bpm, voices, chord_end, downbeat, tidy)` -> `Clean`.
+- `normalize(notes, controls, beats_per_bar, max_bpm, voices, chord_end, rest_min, cells_per_beat,
+  downbeat, tidy, fine, min_dur, lh_max, rh_max, drop_ornaments)` -> `Clean`.
   Notes phải có `.hand` ("R"/"L"). Trả về note trên đồng hồ mới (giây, bội của `clean.unit` = nửa ô lưới).
+  `min_dur`: bỏ nốt ngắn hơn (chỉ khi còn >= 8 nốt); `lh_max`/`rh_max`/`drop_ornaments`: gọi `_simplify`.
+  `fine=False` (mặc định) = "16th floor": `fine_snap = fine or cpb < 4`, `cells_only=not fine and cpb >= 4`.
 - `find_cell`: tìm chu kỳ ô lưới bằng comb filter (numpy). Cần >= vài chục onset.
-- `_snap`: đặt hợp âm lên lưới, bám tempo trôi; hợp âm lệch nhiều thì thử nửa ô (ornament, "fine").
-- `_voice`: mỗi tay thành chuỗi hợp âm không chồng; hợp âm cùng độ dài; `voices="single"` cắt nốt ngân.
+- `_snap(groups, cell, origin, fine=False)`: đặt hợp âm lên lưới, bám tempo trôi. `fine=False`: chỉ ô lưới
+  nguyên; `fine=True`: hợp âm lệch nhiều được thử nửa ô (ornament, 32nd). `normalize` tự bật `fine` khi
+  ô lưới là 8th hoặc dài hơn (`cpb < 4`) vì nửa ô khi đó vẫn >= 16th.
+- `_voice(..., tidy=True, cells_only=False)`: mỗi tay thành chuỗi hợp âm không chồng; hợp âm cùng độ dài;
+  `voices="single"` cắt nốt ngân. `cells_only=True`: độ dài luôn là bội của ô lưới nguyên (không có 32nd vụn).
 - `_tidy_len(u, e)` (bước `tidy`, mặc định bật): nốt dài >= 4 đơn vị không kết thúc ở đơn vị lẻ; độ dài hạ về
   giá trị ghi được `STD_LEN`; phần chênh thành nghỉ ngắn. Lý do: phần mềm chấm nhạc làm tròn kết thúc nốt dài
   rồi tách nó sang voice 2 khi một chuỗi 32nd bắt đầu giữa ô lưới. Tắt bằng `--no-tidy`.
-- `revoice(clean, voices, chord_end, tidy)`: voice lại `clean.notes` theo tay hiện có sau khi nốt bị sửa trên đồng
-  hồ sạch (đổi tay có thể chồng nốt ngân của tay kia). Trả `(Clean, [(nốt cũ, nốt mới)])`; nốt trùng phím bị gộp
-  (không có cặp).
+- `_simplify(per_hand, lh_max, rh_max, drop_ornaments)` -> `{"ornaments", "thinned"}`. Chạy trên
+  `per_hand` đã snap, trước `_voice`. `drop_ornaments`: bỏ nốt rất ngắn (< `ORN_LEN` = 1.5 unit) cách nốt
+  dài cùng unit hoặc hợp âm dài kề bên (`ORN_GAP` = 2 unit) 1-2 bán cung; khoảng cách 0 (cùng phím) không bỏ.
+  Pass này chạy cả khi `fine=False` (nốt láy bị gộp lên beat) và `fine=True` (nốt láy ở unit kề).
+- `_limit_chord(chord, k, bass_first)`: giữ tối đa `k` nốt. Tay trái: bass (thấp nhất) trước, rồi nốt cao
+  nhất, rồi nốt ngân lâu nhất. Tay phải: nốt cao nhất (giai điệu) trước, rồi nốt thấp nhất.
+- `revoice(clean, voices="single", chord_end="median", tidy=True, fine=False)`: voice lại `clean.notes` theo
+  tay hiện có sau khi nốt bị sửa trên đồng hồ sạch (đổi tay có thể chồng nốt ngân của tay kia). Trả
+  `(Clean, [(nốt cũ, nốt mới)])`; nốt trùng phím bị gộp (không có cặp). `fine=False` (mặc định) truyền
+  `cells_only=True`; `fine=True` = hành vi cũ (cho phép nửa ô).
 - `write_midi(..., fingers=None)`: 3 track (conductor, Right hand, Left hand), pedal đi theo nốt. `fingers` ánh xạ
   `id(note)` -> nhãn ngón ("R3", "L1", "Rg"), ghi thành text event (meta 0x01) ngay trước nốt, đúng dạng
   `midi_loader.read_markers`. Báo `ValueError` nếu `units_per_beat` không chia hết `PPQ`.
@@ -263,6 +285,33 @@ main()
 - `clean_to_sequences`, `write_musicxml`: `Clean` -> 2 part; nốt qua vạch nhịp cắt đôi và nối tie;
   `divisions = units_per_beat`; tempo ghi bằng `<direction>` ở measure đầu P1; pickup là rest đầu measure 1.
 
+### `xml_regrid_piano.py`
+
+- `read_score_meta(path)` -> `(fifths, bpm)`: `<key><fifths>` đầu tiên và tempo đầu tiên (`<sound tempo>`
+  hoặc `<metronome><per-minute>`), có thể `None`.
+- `extract_notes_from_musicxml(path, split_midi, hand="auto", split_chords=False)`: đọc MusicXML thành
+  `Note` với thời gian tính bằng **phách đen** (không phải giây); dùng `N.load_musicxml_root`, `parse_measure`,
+  `assign_hand` của đường MusicXML.
+- `main`: `normalize(notes, max_bpm=90, ...)` (1 beat = 1 phách đen), rồi `write_musicxml`; `clean.bpm` được
+  ghi đè bằng `--tempo-mark` để tempo marking đúng. `--min-dur` tính bằng phách đen.
+- `--key` / `--tempo-mark` mặc định lấy từ input; ép bằng flag nếu cần. `--fine`, `--min-dur`, `--lh-max`,
+  `--rh-max`, `--drop-ornaments`, `--simplify` giống CLI chính (preset `--simplify` = 3 / 1 / bỏ láy).
+
+### `app.py` (web UI)
+
+- `GET /`: trả `static/index.html` (đường dẫn tính từ `Path(__file__).resolve().parent`).
+- `POST /normalize`: form `file`, `beats`, `split`, `hand`, `split_chords`, `downbeat`, `max_bpm`, `fine`,
+  `min_dur`, `lh_max`, `rh_max`, `drop_ornaments`, `simplify`. MIDI -> `load_midi_input`; XML ->
+  `xml_regrid.extract_notes_from_musicxml` + `read_score_meta` + `max_bpm=90`, `min_dur=0` (đơn vị phách đen).
+- `_resolve_simplify`: preset giống CLI, `lh_max`/`rh_max` khác `None` (kể cả 0) thắng. UI chỉ gửi hai field
+  này khi > 0, nên "0" trên UI nghĩa là "không gửi" (preset được áp nếu bật `--simplify`).
+- Trả `xml`, `midi` (base64), `events` (`start/end/pitch/hand`), `report`, `command`, `stats`, `input_kind`,
+  `bpm`, `beats`, `key`. Lỗi input -> 400, lỗi engine/ghi file -> 500 (không lộ traceback).
+- `command` là câu lệnh đúng cho loại input, chỉ gồm flag khác mặc định.
+- `static/index.html`: vanilla JS, OSMD render, `midi-player-js` + `soundfont-player` phát, cursor theo tick,
+  tải `.xml`/`.mid`, copy command, hiện bản gốc khi input là MusicXML. CDN: OSMD 1.8.9,
+  `midi-player-js@2.0.17/browser/midiplayer.js` (global `MidiPlayer`), `soundfont-player@0.12.0`.
+
 ---
 
 ## 8. CLI hiện tại
@@ -282,12 +331,23 @@ output                 (tùy chọn; mặc định <input>_clean.mid hoặc _cle
 --channel1 --channel2 --program --volume1 --volume2 --no-brace --no-final-barline
 --reader {auto,loader,builtin}   (MIDI)
 --beats N                        (MIDI) số phách mỗi ô nhịp, mặc định 4
---max-bpm X                      (MIDI)
+--max-bpm X                      (MIDI) mặc định 130
 --voices {single,keep}           (MIDI; keep chỉ khi xuất .mid)
 --no-tidy                        (MIDI)
 --chord-end {median,max,min}     (MIDI)
 --downbeat {auto,first}          (MIDI)
+--fine                           (MIDI) cho phép nửa ô lưới; mặc định chỉ ô nguyên khi ô <= 16th,
+                                 nhưng nửa ô vẫn được phép khi ô là 8th hoặc dài hơn
+--min-dur SEC                    (MIDI) bỏ nốt ngắn hơn SEC giây, mặc định 0
+--lh-max N                       (MIDI) tối đa N nốt/hợp âm tay trái, mặc định None -> 0 (3 khi --simplify)
+--rh-max N                       (MIDI) tối đa N nốt/hợp âm tay phải, mặc định None -> 0 (1 khi --simplify)
+--drop-ornaments                 (MIDI) bỏ nốt láy
+--simplify                       (MIDI) preset --lh-max 3 --rh-max 1 --drop-ornaments
 ```
+
+Flag MIDI-only (`--fine`, `--min-dur`, `--lh-max`, `--rh-max`, `--drop-ornaments`, `--simplify`,
+`--beats`, `--max-bpm`, `--voices`, `--no-tidy`, `--chord-end`, `--downbeat`) khi input là MusicXML sẽ bị
+bỏ qua; `run_musicxml` in một cảnh báo ra stderr liệt kê các flag đó và gợi ý `xml_regrid_piano.py`.
 
 Tie/beam của input: tie bỏ mặc định (xem `--keep-ties`), beam luôn bỏ, rest luôn được thêm (trừ `--no-fill-rests`).
 Không có `--reduce`, `--hand-from` hay chọn "voice chính".
@@ -359,9 +419,15 @@ Chạy test (pytest + numpy):
 
 ```bash
 pytest test_normalize.py
-python normalize_piano_musicxml.py samples/input_tempo180.xml output/test_output.xml
+python normalize_piano_musicxml.py samples/Luu_Nien_messy.mid output/test_output.xml --beats 4
 python tests/check_output.py output/test_output.xml --channels 1,2 --min-notes 1
+python xml_regrid_piano.py samples/piano_messy.xml output/regrid.xml
+python tests/check_output.py output/regrid.xml --channels 1,2 --min-notes 1
 ```
+
+Máy dev này không cho pytest ghi vào `%TEMP%\pytest-of-Admin`; thêm
+`--basetemp=C:\Users\Admin\AppData\Local\Temp\opencode\pt`. CLI cần `$env:PYTHONIOENCODING="utf-8"` trên
+Windows để in tiếng Việt.
 
 `tests/check_output.py` kiểm tra cấu trúc output MusicXML, độ dài từng measure (implicit chỉ cần không dài quá),
 không có `<backup>`, tie không treo (`--no-timing` để bỏ). Chạy nó trên output của cả đường MIDI và MusicXML.
@@ -369,7 +435,20 @@ không có `<backup>`, tie không treo (`--no-timing` để bỏ). Chạy nó tr
 `test_normalize.py` kiểm tra thêm: engine MIDI (lưới, tempo, ô nhịp, pickup, 1 voice mỗi tay, tidy),
 writer MIDI, round-trip MIDI -> MusicXML (từng nốt khớp sau khi nối tie, mỗi ô nhịp đủ độ dài, chỉ voice 1),
 `split_duration`, đường MusicXML -> MusicXML (`samples/piano_messy.xml`: chord không đẩy thời gian, các chế độ
-`--hand`, grace, ô nhịp lấy đà, đổi nhịp, `--keep-ties`, `--no-fill-rests`, `.mxl`), `split_hands`, `sanitize_ties`, CLI. Máy không có pytest thì test bằng tay các lệnh trên.
+`--hand`, grace, ô nhịp lấy đà, đổi nhịp, `--keep-ties`, `--no-fill-rests`, `.mxl`), `split_hands`, `sanitize_ties`, CLI.
+
+Các test mới cho thay đổi gần đây:
+
+- `test_cell_of_an_eighth_keeps_sixteenths`: ô là 8th -> 16th offbeat vẫn còn (mặc định và `--fine`)
+- `test_cell_of_a_sixteenth_has_no_thirty_seconds`: ô là 16th -> mặc định không có unit lẻ, `--fine` có
+- `test_lh_max_keeps_the_bass` / `test_rh_max_keeps_the_melody`: `_limit_chord`
+- `test_min_dur_drops_short_notes`: bỏ nốt ngắn, giữ nguyên nếu còn < 8 nốt
+- `test_drop_ornaments_removes_a_grace_note`: cùng unit (fine=False), unit kề (fine=True), cùng phím được giữ
+- `test_simplify_preset_and_explicit_zero`: preset 3/1, `--lh-max 0` thắng
+- `test_revoice_fine_parameter`: `revoice(fine=True)` cho nửa ô, mặc định ô nguyên
+- `test_xml_path_warns_about_midi_only_flags`: cảnh báo stderr trên đường MusicXML
+- `test_app_normalize_endpoint`: `app.normalize` cho cả MIDI và XML
+- `test_xml_regrid_script_runs`: chạy `xml_regrid_piano.py` + `check_output.py`
 
 Test hiện tại kiểm tra:
 
@@ -615,8 +694,8 @@ Docs updated:
 - AGENTS.md section nào
 
 Tested with:
-- samples/input_tempo180.xml
-- samples/reference_tempo90.xml
+- samples/Luu_Nien_messy.mid
+- samples/piano_messy.xml
 ```
 
 ---
@@ -695,12 +774,19 @@ Mọi heuristic mới phải có test với file mẫu.
 - Mọi voice của một tay được gộp thành một chuỗi: nốt ngân dài dưới giai điệu chạy bị cắt tại onset kế.
   Note trùng pitch cùng onset được gộp.
 - Engine MIDI cắt nốt ngân khi tay đó có hợp âm kế; `tidy` rút ngắn vài nốt và để lại nghỉ ngắn.
+- Mặc định không ghi nốt ngắn hơn 16th khi ô lưới là 16th hoặc ngắn hơn; 32nd vụn bị gộp/lên ô. `--fine`
+  giữ lại (hành vi cũ). Khi ô lưới là 8th hoặc dài hơn, nửa ô (16th) vẫn được giữ.
+- `--simplify` / `--rh-max` giữ nốt cao nhất làm giai điệu; nốt giữa hợp âm có thể mất.
 - Tie input bỏ mặc định; `--keep-ties` chỉ giữ cặp nguyên vẹn. Beam, dynamics, pedal (MusicXML), lyrics bị bỏ.
 - Tuplet: độ dài không chia đúng thì ghi nốt gần nhất (MusicXML); engine MIDI chia lưới đều, không nhận tuplet.
 - Phân tay MusicXML `auto` đưa note trầm ở staff tay phải sang tay trái; staff chéo (cross-staff) không được nhận ra.
 - `split_hands` cho MIDI 1 track chỉ dựa vào vị trí/pitch; hai tay đan nhau có thể sai.
 - Một tempo cho cả bài (MusicXML: tempo đầu tiên; MIDI: tempo tìm được). Output luôn khóa Sol/Fa.
 - Engine MIDI cần numpy và giả định phách đen (x/4).
+- Flag MIDI-only trên đường MusicXML -> MusicXML bị bỏ qua (có cảnh báo stderr); muốn re-grid phải dùng
+  `xml_regrid_piano.py`.
+- Web UI cần internet để tải CDN/soundfont cho phần render + nghe thử; không có mạng thì vẫn normalize và
+  tải file, nhưng không nghe được. Chưa có loop, click-to-play, hay chọn đoạn.
 - Chưa thử mở output bằng MuseScore trong môi trường phát triển; cần kiểm tra bằng mắt ô nhịp có nốt ngân + ornament.
 - Chưa validate DTD nghiêm ngặt, chưa ghi `.mxl`, chưa hỗ trợ MusicXML -> MIDI và `score-timewise`.
 - Chưa có chế độ output 1 part 2 staff.
@@ -712,8 +798,8 @@ Mọi heuristic mới phải có test với file mẫu.
 
 Trước khi commit hoặc bàn giao:
 
-- [ ] đã chạy thử với `samples/input_tempo180.xml`
-- [ ] đã chạy thử với `samples/reference_tempo90.xml`
+- [ ] đã chạy thử với `samples/Luu_Nien_messy.mid`
+- [ ] đã chạy thử với `samples/piano_messy.xml`
 - [ ] output không còn nhiều voice trong mỗi part
 - [ ] output có 2 part P1/P2
 - [ ] output có channel đúng

@@ -1,6 +1,10 @@
 """normalize_piano_musicxml.py: a played-in piece (MIDI) or a messy MusicXML becomes one tidy voice per hand."""
+import asyncio
+import base64
 import os
 import random
+import subprocess
+import sys
 
 import pytest
 
@@ -393,3 +397,201 @@ def test_write_midi_rejects_a_beat_that_does_not_divide_ppq(tmp_path):
     bad = N.replace(clean, units_per_beat=7)
     with pytest.raises(ValueError):
         N.write_midi(str(tmp_path / "x.mid"), bad)
+
+
+# --------------------------------------------------------------------------- #
+# Grid gate, simplification, and the XML/app tooling
+# --------------------------------------------------------------------------- #
+
+def test_cell_of_an_eighth_keeps_sixteenths():
+    """cell = 8th (cpb 2): half a cell is a 16th, so offbeats stay by default."""
+    cell = 0.35
+    notes = []
+    for i in range(16 * 8):
+        notes.append(Note(60 + (i % 12), i * cell, i * cell + cell * 0.9, 90, 0, "R"))
+    for i in range(0, 16 * 8, 4):
+        notes.append(Note(40 + (i % 5), i * cell, i * cell + cell * 3, 90, 0, "L"))
+    for bar in range(0, 16, 4):
+        t = (bar * 8 + 3) * cell + cell / 2
+        notes.append(Note(84, t, t + cell * 0.4, 90, 0, "R"))
+
+    clean = N.normalize(notes)
+    assert clean.stats["bpm"] == pytest.approx(60 / (cell * 2), abs=1.0)
+    odd = [n for n in clean.notes if round(n.start / clean.unit) % 2]
+    assert odd, "offbeat 16ths disappeared when the cell is an eighth"
+
+    fine = N.normalize(notes, fine=True)
+    assert any(round(n.start / fine.unit) % 2 for n in fine.notes)
+
+
+def test_cell_of_a_sixteenth_has_no_thirty_seconds():
+    """cell = 16th (cpb 4): default is whole cells only; --fine keeps the 32nd crumbs."""
+    notes, _ = _piece(bars=16)
+    for i in range(4, 80, 6):
+        t = 1.7 + i * CELL + CELL / 2
+        notes.append(Note(88, t, t + 0.02, 90, 0, "R"))
+
+    clean = N.normalize(notes)
+    assert all(round(n.start / clean.unit) % 2 == 0 for n in clean.notes)
+
+    fine = N.normalize(notes, fine=True)
+    assert any(round(n.start / fine.unit) % 2 for n in fine.notes)
+
+
+def test_lh_max_keeps_the_bass():
+    notes, _ = _piece(bars=6)
+    bass = min((n for n in notes if n.hand == "L" and n.pitch == 40), key=lambda n: n.start)
+    extra = [Note(bass.pitch + d, bass.start, bass.end, 90, 0, "L") for d in (1, 3, 5)]
+
+    one = N.normalize(notes + extra, lh_max=1)
+    left = {n.pitch for n in one.notes if n.hand == "L"}
+    assert 40 in left and not ({41, 43, 45} & left)
+
+    two = N.normalize(notes + extra, lh_max=2)
+    left = {n.pitch for n in two.notes if n.hand == "L"}
+    assert 40 in left and 45 in left and not ({41, 43} & left)
+
+
+def test_rh_max_keeps_the_melody():
+    notes, _ = _piece(bars=6)
+    mel = next(n for n in notes if n.hand == "R" and n.pitch == 67)
+    extra = [Note(mel.pitch - d, mel.start, mel.end, 90, 0, "R") for d in (1, 3, 5)]
+
+    one = N.normalize(notes + extra, rh_max=1)
+    right = {n.pitch for n in one.notes if n.hand == "R"}
+    assert 67 in right and not ({66, 64, 62} & right)
+
+
+def test_min_dur_drops_short_notes():
+    notes, _ = _piece(bars=6)
+    tiny = [Note(90 + i, 1.0 + i * 0.5, 1.01 + i * 0.5, 90, 0, "R") for i in range(3)]
+    clean = N.normalize(notes + tiny, min_dur=0.05)
+    assert clean.stats["dropped_short"] == 3
+    assert clean.stats["notes_in"] == len(notes) + 3
+    assert not ({90, 91, 92} & {n.pitch for n in clean.notes})
+
+    small = [Note(60 + i, i * 0.25, i * 0.25 + (0.01 if i < 9 else 0.2), 90, 0, "R")
+             for i in range(12)]
+    kept = N.normalize(small, min_dur=0.05)                 # fewer than 8 would remain: keep all
+    assert kept.stats["dropped_short"] == 0
+    assert kept.stats["notes_in"] == 12
+
+
+def test_drop_ornaments_removes_a_grace_note():
+    """A short note a step above a long one: merged on the beat (fine=False) and on the next unit."""
+    cell = CELL
+    base = [Note(60 + 3 * i, i * cell, i * cell + cell * 0.9, 90, 0, "R") for i in range(16)]
+    t0 = 4 * cell
+    long_pitch = 60 + 3 * 4
+
+    def with_short(pitch):
+        s = t0 + 0.4 * cell
+        return base + [Note(pitch, s, s + 0.2 * cell, 90, 0, "R")]
+
+    merged = N.normalize(with_short(long_pitch + 1), fine=False, drop_ornaments=True)
+    assert long_pitch + 1 not in {n.pitch for n in merged.notes}
+
+    half = N.normalize(with_short(long_pitch + 1), fine=True, drop_ornaments=True)
+    assert long_pitch + 1 not in {n.pitch for n in half.notes}
+
+    repeated = N.normalize(with_short(long_pitch), fine=True, drop_ornaments=True)  # distance 0: kept
+    assert any(n.pitch == long_pitch and round(n.start / repeated.unit) % 2
+               for n in repeated.notes)
+
+
+def test_simplify_preset_and_explicit_zero():
+    parser = N.build_parser()
+
+    def resolved(argv):
+        args = parser.parse_args(argv)
+        lh = args.lh_max if args.lh_max is not None else (3 if args.simplify else 0)
+        rh = args.rh_max if args.rh_max is not None else (1 if args.simplify else 0)
+        return lh, rh
+
+    assert parser.parse_args(["in.mid", "out.mid"]).lh_max is None
+    assert resolved(["in.mid", "out.mid", "--simplify"]) == (3, 1)
+    assert resolved(["in.mid", "out.mid", "--simplify", "--lh-max", "0"]) == (0, 1)
+
+
+def test_revoice_fine_parameter():
+    notes, _ = _piece(bars=4)
+    clean = N.normalize(notes)
+    bass = next(n for n in clean.notes if n.hand == "L" and n.pitch == 40 and n.start == 0.0)
+    edited = N.replace(clean, notes=[
+        N.replace(n, end=bass.start + 1.2 * clean.unit) if n is bass else n
+        for n in clean.notes
+    ])
+
+    coarse, _ = N.revoice(edited)
+    fine, _ = N.revoice(edited, fine=True)
+    c = next(n for n in coarse.notes if n.start == bass.start and n.pitch == bass.pitch)
+    f = next(n for n in fine.notes if n.start == bass.start and n.pitch == bass.pitch)
+    assert (c.end - c.start) / clean.unit == pytest.approx(2)
+    assert (f.end - f.start) / clean.unit == pytest.approx(1)
+
+
+def test_xml_path_warns_about_midi_only_flags(tmp_path, capsys):
+    dst = str(tmp_path / "o.xml")
+    assert N.main([_MESSY, dst, "--simplify"]) == 0
+    err = capsys.readouterr().err
+    assert "--simplify" in err
+    assert "chỉ áp dụng cho input MIDI" in err
+
+
+class _FakeUpload:
+    def __init__(self, path):
+        self.filename = os.path.basename(path)
+        with open(path, "rb") as fh:
+            self._data = fh.read()
+
+    async def read(self):
+        return self._data
+
+
+_MIDI_SAMPLE = os.path.join(_HERE, "samples", "Luu_Nien_messy.mid")
+
+
+def test_app_normalize_endpoint():
+    pytest.importorskip("fastapi")
+    import app as A
+
+    for path, kind in ((_MIDI_SAMPLE, "midi"), (_MESSY, "xml")):
+        data = asyncio.run(A.normalize(
+            file=_FakeUpload(path), beats=4, split="C4", hand="auto", split_chords=False,
+            downbeat="auto", max_bpm=130.0, fine=False, min_dur=0.0,
+            lh_max=None, rh_max=None, drop_ornaments=False, simplify=False,
+        ))
+        assert data["input_kind"] == kind
+        root = ET.fromstring(data["xml"])
+        assert root.tag == "score-partwise"
+        assert base64.b64decode(data["midi"])[:4] == b"MThd"
+        assert data["events"]
+        assert data["report"] is not None and data["stats"]
+        for bad in ("--max-chord", "--min-len", "--min-vel-ratio", "--merge-gap"):
+            assert bad not in data["command"]
+
+
+def test_xml_regrid_script_runs(tmp_path):
+    import xml_regrid_piano as X
+
+    notes = X.extract_notes_from_musicxml(_MESSY, 60)
+    assert notes
+    fifths, bpm = X.read_score_meta(_MESSY)
+    assert fifths is None or isinstance(fifths, int)
+    assert bpm is None or isinstance(bpm, float)
+
+    out = str(tmp_path / "regrid.xml")
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    run = subprocess.run(
+        [sys.executable, os.path.join(_HERE, "xml_regrid_piano.py"), _MESSY, out],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
+    )
+    assert run.returncode == 0, run.stderr
+    assert os.path.getsize(out) > 0
+
+    check = subprocess.run(
+        [sys.executable, os.path.join(_HERE, "tests", "check_output.py"), out,
+         "--channels", "1,2", "--min-notes", "1"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
+    )
+    assert check.returncode == 0, check.stdout + check.stderr

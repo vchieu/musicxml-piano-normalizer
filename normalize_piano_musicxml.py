@@ -18,6 +18,14 @@ trôi, đặt mỗi hợp âm lên lưới, tìm ô nhịp và nốt lấy đà 
 hợp âm không chồng nhau. Bước `tidy` (mặc định bật) còn đảm bảo độ dài mọi nốt là giá trị nốt
 ghi được và nốt dài không kết thúc giữa hai ô lưới, để phần mềm chấm nhạc không tự tách voice 2.
 
+Mặc định không ghi nốt ngắn hơn 16th: khi ô lưới là 16th hoặc ngắn hơn, mọi hợp âm và độ dài nốt
+nằm trên Ô LƯỚI NGUYÊN, nên MIDI chơi tay không còn nốt 32nd vụn / hợp âm bị tách làm hai. Khi ô lưới
+là 8th hoặc dài hơn thì nửa ô vẫn còn là 16th, nên nốt 16th (ornament) được giữ. `--fine` cho phép
+nửa ô trong mọi trường hợp (hành vi cũ).
+Nốt cực ngắn (rác của bộ chuyển audio -> MIDI) bỏ bằng `--min-dur`.
+Đơn giản hóa: `--lh-max N` / `--rh-max N` (tối đa N nốt mỗi hợp âm, tay trái giữ bass, tay phải giữ
+giai điệu), `--drop-ornaments` (bỏ nốt láy), `--simplify` (= 3 / 1 / bỏ nốt láy).
+
 Đường MusicXML chỉ dùng thư viện chuẩn (không cần numpy).
 
 Cách dùng:
@@ -84,6 +92,9 @@ FINE_TOL = 0.28          # of a cell: further from the coarse grid than this, a 
 FINE_RATIO = 0.5         # ... when its error is under this share of the coarse error
 MAX_BPM = 130.0          # the beat (quarter) is the multiple of the cell that keeps the tempo under this
 REST_MIN_BEAT = 0.75     # a gap shorter than this share of a beat between a hand's chords is not written as a rest
+MIN_DUR = 0.0            # s: notes shorter than this are dropped before snapping (0 = keep all)
+ORN_LEN = 1.5            # units (half cell): a chord whose notes are all shorter than this may be an ornament
+ORN_GAP = 2              # units: ... if a longer chord of the same hand starts this close, a step (1-2 semitones) away
 PPQ = 480
 # Written note values, in units (half a cell): 32nd, 16th, dotted 16th, 8th, dotted 8th, quarter,
 # dotted quarter, half, dotted half, whole. A notation program shows anything else (10, 13, ...)
@@ -189,9 +200,14 @@ def find_cell(times: Sequence[float]) -> Tuple[float, float, float]:
 # 2. Snapping, following the player
 # --------------------------------------------------------------------------- #
 
-def _snap(groups: List[list], cell: float, origin: float):
+def _snap(groups: List[list], cell: float, origin: float, fine: bool = False):
     """
     Put every group of notes on the grid, in units of half a cell.
+
+    fine=False: every group goes to the nearest WHOLE cell (even units), so a hand never gets a
+    32nd crumb or a chord split over two units. fine=True: a group far from the coarse grid may
+    use the half cell when that fits clearly better (ornaments). `normalize` passes fine=True by
+    default when the cell is an 8th or longer: half a cell is then still a 16th or longer.
 
     Returns (units, drift, stats): the unit each group lands on, the grid's offset from the
     origin at that group (seconds - how far the player had drifted) and counters.
@@ -215,7 +231,7 @@ def _snap(groups: List[list], cell: float, origin: float):
             d += PLL_GAIN * e
             stats["coarse"] += 1
             stats["on_grid"] += 1
-        else:
+        elif fine:
             uf = math.floor(x / half + 0.5)
             ef = x - uf * half
             if uf % 2 and abs(ef) < FINE_RATIO * abs(e):
@@ -224,6 +240,9 @@ def _snap(groups: List[list], cell: float, origin: float):
             else:
                 u = 2 * k
                 stats["outliers"] += 1
+        else:
+            u = 2 * k
+            stats["outliers"] += 1
         u = max(u, prev)
         prev = u
         units.append(u)
@@ -294,13 +313,14 @@ def _tidy_len(u: int, e: int) -> int:
 
 
 def _voice(by_u: dict, voices: str, chord_end: str, rest_min: int, counters: dict,
-           tidy: bool = True) -> List[tuple]:
+           tidy: bool = True, cells_only: bool = False) -> List[tuple]:
     """
     [(start unit, end unit, [(note, end_raw)])] for one hand.
 
     "single": a chord has one length and ends where the hand's next chord starts, unless a
     gap of rest_min units or more is left (then it is a rest). "keep": every note keeps its own
     length (so overlaps stay), gaps shorter than rest_min are still filled.
+    cells_only: a written length is always a whole number of cells (never a 32nd crumb).
     """
     us = sorted(by_u)
     out = []
@@ -316,7 +336,7 @@ def _voice(by_u: dict, voices: str, chord_end: str, rest_min: int, counters: dic
 
         def coarse(e_float: float) -> int:
             """A written length: whole cells when it is long enough to be one, else the nearest unit."""
-            if e_float - u >= 1.5:
+            if cells_only or e_float - u >= 1.5:
                 return max(u + 2, 2 * math.floor(e_float / 2.0 + 0.5))
             return max(u + 1, math.floor(e_float + 0.5))
 
@@ -345,13 +365,95 @@ def _voice(by_u: dict, voices: str, chord_end: str, rest_min: int, counters: dic
 
 
 # --------------------------------------------------------------------------- #
+# Simplifying: fewer notes per chord, no ornaments
+# --------------------------------------------------------------------------- #
+
+def _limit_chord(chord: list, k: int, bass_first: bool) -> list:
+    """
+    At most k notes of a chord [(note, end_raw)], in their original order.
+    Left hand (bass_first): the lowest note first (the bass), then the highest, then the longest held.
+    Right hand: the highest note first (the melody), then the lowest, then the longest held.
+    """
+    if k <= 0 or len(chord) <= k:
+        return chord
+    lo = min(chord, key=lambda c: c[0].pitch)
+    hi = max(chord, key=lambda c: c[0].pitch)
+    first, second = (lo, hi) if bass_first else (hi, lo)
+    rest = sorted((c for c in chord if c is not first and c is not second),
+                  key=lambda c: (-(c[1]), -c[0].velocity))
+    keep = ([first, second] + rest)[:k]
+    ids = {id(c) for c in keep}
+    return [c for c in chord if id(c) in ids]
+
+
+def _simplify(per_hand: dict, lh_max: int = 0, rh_max: int = 0,
+              drop_ornaments: bool = False) -> dict:
+    """
+    Thin out `per_hand` ({hand: {unit: [(note, end_raw_unit)]}}) in place; returns counters.
+
+    drop_ornaments: an ornament (grace note, mordent, trill note) is a very short note (< ORN_LEN
+        units) that sits a step (1-2 semitones) from a longer note. It is dropped when it shares a
+        unit with a longer note (fine=False merges the ornament onto the beat) and when it sits in
+        a short chord within ORN_GAP units of a longer chord of the same hand (fine=True). A
+        repeated key (distance 0) is never an ornament.
+    lh_max / rh_max: at most that many notes in a left / right hand chord (0 = no limit).
+        Right hand 1 = the melody note only; left hand 1 = the bass only.
+    """
+    out = {"ornaments": 0, "thinned": 0}
+    for hand, k in ((RIGHT, rh_max), (LEFT, lh_max)):
+        by_u = per_hand[hand]
+        if drop_ornaments:
+            # Same unit: the short note a step from a longer one on the same beat is the ornament.
+            for u in list(by_u):
+                chord = by_u[u]
+                long_notes = [c for c in chord if c[1] - u >= ORN_LEN]
+                if not long_notes:
+                    continue
+                kept = []
+                for c in chord:
+                    if c[1] - u < ORN_LEN and any(1 <= abs(c[0].pitch - b[0].pitch) <= 2
+                                                  for b in long_notes):
+                        out["ornaments"] += 1
+                    else:
+                        kept.append(c)
+                by_u[u] = kept
+            # Neighbouring units: a short chord a step from a longer chord of the same hand.
+            us = sorted(by_u)
+            drop = []
+            for i, u in enumerate(us):
+                chord = by_u[u]
+                if not chord or not all(e - u < ORN_LEN for _, e in chord):
+                    continue
+                for j in (i - 1, i + 1):
+                    if not 0 <= j < len(us) or abs(us[j] - u) > ORN_GAP:
+                        continue
+                    other = by_u[us[j]]
+                    if all(e - us[j] < ORN_LEN for _, e in other):
+                        continue                              # neighbour is itself short
+                    d = min(abs(a[0].pitch - b[0].pitch) for a in chord for b in other)
+                    if 1 <= d <= 2:
+                        drop.append(u)
+                        break
+            for u in drop:
+                out["ornaments"] += len(by_u.pop(u))
+        if k > 0:
+            for u in list(by_u):
+                kept = _limit_chord(by_u[u], k, bass_first=(hand == LEFT))
+                out["thinned"] += len(by_u[u]) - len(kept)
+                by_u[u] = kept
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # The whole thing
 # --------------------------------------------------------------------------- #
 
 def normalize(notes: Sequence, controls: Optional[Sequence[tuple]] = None, beats_per_bar: int = 4,
               max_bpm: float = MAX_BPM, voices: str = "single", chord_end: str = "median",
               rest_min: Optional[int] = None, cells_per_beat: Optional[int] = None,
-              downbeat: str = "auto", tidy: bool = True) -> Clean:
+              downbeat: str = "auto", tidy: bool = True, fine: bool = False,
+              min_dur: float = MIN_DUR, lh_max: int = 0, rh_max: int = 0,
+              drop_ornaments: bool = False) -> Clean:
     """
     Clean `notes` (objects with .pitch .start .end .velocity .hand, hands already decided).
 
@@ -364,6 +466,14 @@ def normalize(notes: Sequence, controls: Optional[Sequence[tuple]] = None, beats
     downbeat:        "auto", or "first" to make the first note beat 1.
     tidy:            (voices="single") every note gets a written note value and no long note ends
                      between two cells, so a notation program prints one voice per staff.
+    fine:            False (default): never write a note shorter than a 16th. Whole cells are used
+                     when the cell is a 16th or shorter; when it is an 8th or longer, a half cell
+                     (still a 16th or longer) is allowed too. True: ornaments may always use the
+                     half cell (the old behaviour).
+    min_dur:         notes shorter than this many seconds are dropped first (0: keep all).
+    lh_max, rh_max:  at most this many notes in a left / right hand chord (0: no limit). Left hand keeps
+                     the bass first; right hand keeps the highest (melody) note first.
+    drop_ornaments:  drop grace / mordent / trill notes (very short chords a step from a longer one).
     controls:        [(time, controller, value)], mapped onto the new clock.
     """
     if np is None:
@@ -372,15 +482,24 @@ def normalize(notes: Sequence, controls: Optional[Sequence[tuple]] = None, beats
     if not notes:
         raise ValueError("no notes")
     report: List[str] = []
+    n_raw = len(notes)
+    if min_dur > 0:
+        kept = [n for n in notes if n.end - n.start >= min_dur]
+        if len(kept) >= 8:
+            notes = kept
+    dropped_short = n_raw - len(notes)
     groups = _chords(notes)
     gtimes = [sum(n.start for n in g) / len(g) for g in groups]
     cell, origin, strength = find_cell(gtimes)
-    units, drift, st = _snap(groups, cell, origin)
+    cpb, bpm = pick_beat(cell, max_bpm) if not cells_per_beat else \
+        (cells_per_beat, round(60.0 / (cell * cells_per_beat), 2))
+    # A half cell may only be written when it is still at least a 16th: with a cell of an 8th or
+    # longer (cpb < 4) half a cell is a 16th or longer, so the fine positions are safe by default.
+    fine_snap = fine or cpb < 4
+    units, drift, st = _snap(groups, cell, origin, fine=fine_snap)
     fit = st["on_grid"] / max(1, len(groups))
     half = cell / 2.0
 
-    cpb, bpm = pick_beat(cell, max_bpm) if not cells_per_beat else \
-        (cells_per_beat, round(60.0 / (cell * cells_per_beat), 2))
     upb = 2 * cpb                                           # units per beat
     if PPQ % upb:
         raise ValueError("cells_per_beat %d does not divide the resolution" % cpb)
@@ -392,13 +511,16 @@ def normalize(notes: Sequence, controls: Optional[Sequence[tuple]] = None, beats
     wt = np.array([sum(n.start for n in g) / len(g) for g in groups])
     wd = np.array(drift)
     per_hand = {RIGHT: {}, LEFT: {}}
-    items = []
     for g, u, d in zip(groups, units, drift):
         for n in g:
             hand = n.hand or (LEFT if n.pitch < MIDDLE_C else RIGHT)
             e_float = (n.end - origin - d) / half
             per_hand[hand].setdefault(u, []).append((n, e_float))
-            items.append((u, hand, n.pitch, max(1.0, e_float - u)))
+    simp = _simplify(per_hand, lh_max, rh_max, drop_ornaments)
+    items = [(u, hand, n.pitch, max(1.0, e - u))
+             for hand in (RIGHT, LEFT) for u, lst in per_hand[hand].items() for n, e in lst]
+    if not items:
+        raise ValueError("no notes left after simplifying")
 
     bar_u = beats_per_bar * upb
     first_u = min(u for u, _, _, _ in items)
@@ -415,7 +537,8 @@ def normalize(notes: Sequence, controls: Optional[Sequence[tuple]] = None, beats
     out_notes = []
     for hand in (RIGHT, LEFT):
         before = sum(len(v) for v in per_hand[hand].values())
-        for u, ends, ns in _voice(per_hand[hand], voices, chord_end, rest_min, counters, tidy):
+        for u, ends, ns in _voice(per_hand[hand], voices, chord_end, rest_min, counters, tidy,
+                                  cells_only=not fine and cpb >= 4):
             for n, e in zip(ns, ends):
                 kw = dict(start=(u - u0) * unit_new, end=(e - u0) * unit_new, hand=hand,
                           track=0 if hand == RIGHT else 1)
@@ -440,14 +563,22 @@ def normalize(notes: Sequence, controls: Optional[Sequence[tuple]] = None, beats
 
     # --- what was done
     rh = sum(1 for n in out_notes if n.hand == RIGHT)
-    clean.stats = dict(cell=cell, strength=strength, fit=fit, bpm=bpm, notes_in=len(notes),
+    clean.stats = dict(cell=cell, strength=strength, fit=fit, bpm=bpm, notes_in=n_raw,
                        notes_out=len(out_notes), right=rh, left=len(out_notes) - rh,
                        fine=st["fine"], outliers=st["outliers"], cut=counters["cut"],
                        rests=counters["rests"], merged=counters["merged"], tidied=counters["tidied"],
+                       dropped_short=dropped_short, ornaments=simp["ornaments"], thinned=simp["thinned"],
                        pickup_units=lead,
                        phase=phase)
     report.append("grid: cell %.4f s, %d cells to the beat -> %.2f bpm, %d/4; %.0f%% of the chords sit "
                   "within a quarter cell of it" % (cell, cpb, bpm, beats_per_bar, 100 * fit))
+    if dropped_short:
+        report.append("dropped %d note(s) shorter than %.3f s" % (dropped_short, min_dur))
+    if simp["ornaments"]:
+        report.append("dropped %d ornament note(s) (short, a step from a longer chord)" % simp["ornaments"])
+    if simp["thinned"]:
+        report.append("thinned chords: removed %d note(s) (left hand max %s, right hand max %s)"
+                      % (simp["thinned"], lh_max or "-", rh_max or "-"))
     if st["fine"]:
         report.append("%d chord(s) put on the half-cell grid (ornaments)" % st["fine"])
     if st["outliers"]:
@@ -495,12 +626,16 @@ def _meta(kind: int, data: bytes) -> bytes:
     return bytes([0xFF, kind]) + _vlq(len(data)) + data
 
 
-def revoice(clean: Clean, voices: str = "single", chord_end: str = "median", tidy: bool = True):
+def revoice(clean: Clean, voices: str = "single", chord_end: str = "median", tidy: bool = True,
+            fine: bool = False):
     """
     Voice `clean.notes` again, per hand as they now carry it. Needed after the notes were edited
     on the clean clock (a note moved to the other hand may overlap that hand's held notes, which
     a notation program prints as a second voice). Returns (Clean, [(old note, new note)]); a note
     that lands on a key its hand already plays at that unit is merged away (no pair).
+
+    fine: same meaning as in `normalize`. False (default) keeps every written length a whole
+    number of cells (never a 32nd crumb); True allows half-cell lengths (the old behaviour).
     """
     unit = clean.unit
     rest_min = max(2, round(REST_MIN_BEAT * clean.units_per_beat))
@@ -511,7 +646,8 @@ def revoice(clean: Clean, voices: str = "single", chord_end: str = "median", tid
     counters = {"cut": 0, "rests": 0, "merged": 0, "tidied": 0}
     pairs = []
     for hand in (RIGHT, LEFT):
-        for u, ends, ns in _voice(per[hand], voices, chord_end, rest_min, counters, tidy):
+        for u, ends, ns in _voice(per[hand], voices, chord_end, rest_min, counters, tidy,
+                                  cells_only=not fine):
             for n, e in zip(ns, ends):
                 pairs.append((n, replace(n, start=u * unit, end=e * unit, hand=hand,
                                          track=0 if hand == RIGHT else 1)))
@@ -1652,6 +1788,18 @@ def run_musicxml(args):
     except ValueError as e:
         print(f"Lỗi --split: {e}", file=sys.stderr)
         return 1
+    midi_only = [name for name, on in (
+        ("--fine", args.fine), ("--min-dur", args.min_dur),
+        ("--lh-max", args.lh_max is not None), ("--rh-max", args.rh_max is not None),
+        ("--drop-ornaments", args.drop_ornaments), ("--simplify", args.simplify),
+        ("--beats", args.beats != 4), ("--max-bpm", args.max_bpm != MAX_BPM),
+        ("--voices", args.voices != "single"), ("--no-tidy", args.no_tidy),
+        ("--chord-end", args.chord_end != "median"), ("--downbeat", args.downbeat != "auto"),
+    ) if on]
+    if midi_only:
+        print("Lưu ý: %s chỉ áp dụng cho input MIDI; đường MusicXML -> MusicXML bỏ qua. "
+              "Dùng xml_regrid_piano.py nếu muốn re-grid MusicXML bằng engine MIDI."
+              % ", ".join(midi_only), file=sys.stderr)
     try:
         root = load_musicxml_root(args.input)
     except Exception as e:
@@ -1953,11 +2101,16 @@ def run_midi(args):
     except ValueError as e:
         print(f"Lỗi threshold: {e}", file=sys.stderr)
         return 1
+    lh_max = args.lh_max if args.lh_max is not None else (3 if args.simplify else 0)
+    rh_max = args.rh_max if args.rh_max is not None else (1 if args.simplify else 0)
+    drop_orn = args.drop_ornaments or args.simplify
     try:
         inp = load_midi_input(src, args.reader, threshold)
         clean = normalize(inp.notes, controls=inp.controls or None, beats_per_bar=args.beats,
                           max_bpm=args.max_bpm, voices=args.voices, chord_end=args.chord_end,
-                          downbeat=args.downbeat, tidy=not args.no_tidy)
+                          downbeat=args.downbeat, tidy=not args.no_tidy,
+                          fine=args.fine, min_dur=args.min_dur,
+                          lh_max=lh_max, rh_max=rh_max, drop_ornaments=drop_orn)
     except (ValueError, RuntimeError) as e:
         print(f"Không chuẩn hóa được {src}: {e}", file=sys.stderr)
         return 1
@@ -2015,6 +2168,22 @@ def build_parser():
                    help="giữ độ dài như đã chơi (phần mềm chấm nhạc có thể tách voice 2)")
     g.add_argument("--chord-end", choices=("median", "max", "min"), default="median")
     g.add_argument("--downbeat", choices=("auto", "first"), default="auto")
+    g.add_argument("--fine", action="store_true",
+                   help="cho phép đặt hợp âm/độ dài lên nửa ô lưới (ornament, 32nd). Mặc định tắt: mọi nốt "
+                        "nằm trên ô lưới nguyên nên không còn nốt vụn")
+    g.add_argument("--min-dur", type=float, default=MIN_DUR, metavar="SEC",
+                   help="bỏ nốt ngắn hơn SEC giây trước khi chuẩn hóa (mặc định %(default)s = giữ hết)")
+    g.add_argument("--lh-max", type=int, default=None, metavar="N",
+                   help="tay trái tối đa N nốt mỗi hợp âm (giữ nốt bass trước). 1 = chỉ bass. "
+                        "0 = không giới hạn (mặc định 0, hoặc 3 khi --simplify)")
+    g.add_argument("--rh-max", type=int, default=None, metavar="N",
+                   help="tay phải tối đa N nốt mỗi hợp âm (giữ nốt cao nhất = giai điệu trước). "
+                        "1 = chỉ nốt chủ. 0 = không giới hạn (mặc định 0, hoặc 1 khi --simplify)")
+    g.add_argument("--drop-ornaments", action="store_true",
+                   help="bỏ nốt láy (nốt rất ngắn, cách nốt dài cùng beat / hợp âm dài kề bên 1-2 bán cung)")
+    g.add_argument("--simplify", action="store_true",
+                   help="đơn giản hóa: --lh-max 3 --rh-max 1 --drop-ornaments (ghi rõ --lh-max/--rh-max "
+                        "thì giá trị đó thắng, kể cả 0)")
     return p
 
 

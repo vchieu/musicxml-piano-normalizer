@@ -22,9 +22,11 @@ MusicXML -> MIDI chưa hỗ trợ. Muốn ra MIDI từ MusicXML thì mở bằng
 
 ## Yêu cầu
 
-- Python 3.9 trở lên
-- MusicXML: không cần cài gì thêm
+- Python 3.11 trở lên
+- MusicXML: không cần cài gì thêm (chỉ thư viện chuẩn)
 - MIDI: cần `numpy` (`pip install -r requirements.txt`)
+- Web UI (`app.py` + `static/index.html`): cần `fastapi`, `uvicorn`, `python-multipart`
+  (`pip install -r requirements-web.txt`, hoặc `uv sync` nếu dùng `pyproject.toml`)
 - Chạy độc lập, không cần `midi_loader` hay project khác. Nếu chạy trong project có `midi_loader` thì
   script tự dùng nó để đọc MIDI (xem `--reader`).
 
@@ -48,16 +50,19 @@ Script in ra báo cáo ngắn: tempo và lưới tìm được, số nốt bị 
 
 ```bash
 pytest test_normalize.py
-python normalize_piano_musicxml.py samples/input_tempo180.xml output/test_output.xml
+python normalize_piano_musicxml.py samples/Luu_Nien_messy.mid output/test_output.xml --beats 4
 python tests/check_output.py output/test_output.xml --channels 1,2 --min-notes 1
+python xml_regrid_piano.py samples/piano_messy.xml output/regrid.xml
+python tests/check_output.py output/regrid.xml --channels 1,2 --min-notes 1
 ```
 
 Với Make (như trước):
 
 ```bash
-make test
-make test-reference
+make test            # pytest + check_output trên samples/Luu_Nien_messy.mid
+make test-reference  # samples/piano_messy.xml
 make test-all
+make web             # uvicorn app:app --reload
 ```
 
 `tests/check_output.py` kiểm tra output MusicXML: 2 score-part, 2 part, mỗi part chỉ voice 1, 2 MIDI
@@ -65,7 +70,12 @@ channel riêng, mỗi measure đủ độ dài (ô nhịp `implicit` chỉ cần
 không bị treo. Thêm `--no-timing` để bỏ hai kiểm tra cuối. In `PASS` nghĩa là đạt.
 
 `test_normalize.py` (pytest, cần numpy) kiểm tra thêm engine MIDI, round-trip MIDI -> MusicXML từng nốt,
-phân tay, grace, tie, ô nhịp lấy đà, `.mxl`.
+phân tay, grace, tie, ô nhịp lấy đà, `.mxl`, luật "không ghi nốt ngắn hơn 16th", `--fine`, `--lh-max` /
+`--rh-max`, `--min-dur`, `--drop-ornaments`, `--simplify`, `revoice(..., fine=...)`, cảnh báo flag
+MIDI-only trên đường MusicXML, endpoint `app.normalize` và `xml_regrid_piano.py`.
+
+Máy này không cho pytest ghi vào `%TEMP%\pytest-of-Admin`, nên nếu gặp lỗi quyền thì thêm
+`--basetemp=C:\Users\Admin\AppData\Local\Temp\opencode\pt`.
 
 ---
 
@@ -107,6 +117,17 @@ phân tay, grace, tie, ô nhịp lấy đà, `.mxl`.
 | `--no-tidy` | tắt | Giữ độ dài như đã chơi (phần mềm chấm nhạc có thể tự tách voice 2) |
 | `--chord-end` | `median` | Hợp âm kết thúc theo `median`/`max`/`min` của các nốt |
 | `--downbeat` | `auto` | `first`: ép nốt đầu là phách 1 |
+| `--fine` | tắt | Cho phép đặt hợp âm/độ dài lên nửa ô lưới (32nd, ornament). Mặc định chỉ dùng ô lưới nguyên khi ô là 16th hoặc ngắn hơn; khi ô là 8th hoặc dài hơn thì nửa ô (vẫn ≥ 16th) được phép |
+| `--min-dur` | `0` | Bỏ nốt ngắn hơn `SEC` giây trước khi chuẩn hóa (0 = giữ hết). Nếu bỏ xong còn dưới 8 nốt thì giữ nguyên |
+| `--lh-max` | `0` | Tay trái tối đa `N` nốt mỗi hợp âm (giữ nốt bass trước). 0 = không giới hạn; mặc định thành 3 khi `--simplify` |
+| `--rh-max` | `0` | Tay phải tối đa `N` nốt mỗi hợp âm (giữ nốt cao nhất = giai điệu trước). 0 = không giới hạn; mặc định thành 1 khi `--simplify` |
+| `--drop-ornaments` | tắt | Bỏ nốt láy: nốt rất ngắn, cách nốt dài cùng beat hoặc hợp âm dài kề bên 1-2 bán cung (cùng phím thì không bỏ) |
+| `--simplify` | tắt | Preset `--lh-max 3 --rh-max 1 --drop-ornaments`. Ghi rõ `--lh-max`/`--rh-max` thì giá trị đó thắng, kể cả `0` |
+
+Các flag `--fine`, `--min-dur`, `--lh-max`, `--rh-max`, `--drop-ornaments`, `--simplify` (và các flag
+MIDI khác như `--beats`, `--max-bpm`, `--voices`, `--no-tidy`, `--chord-end`, `--downbeat`) chỉ áp dụng
+cho input MIDI. Khi input là MusicXML -> MusicXML, script in cảnh báo ra stderr và bỏ qua chúng; muốn
+re-grid MusicXML bằng engine MIDI thì dùng `xml_regrid_piano.py`.
 
 ---
 
@@ -130,6 +151,15 @@ python normalize_piano_musicxml.py bai.mid bai_clean.mid
 
 # MIDI -> MusicXML, ô nhịp 3/4
 python normalize_piano_musicxml.py bai.mid bai_clean.xml --beats 3
+
+# MIDI: đơn giản hóa hợp âm (LH tối đa 3 nốt, RH giữ giai điệu), bỏ nốt láy
+python normalize_piano_musicxml.py bai.mid bai_clean.xml --simplify
+
+# MIDI: giữ 16th/ornament (cho phép nửa ô lưới)
+python normalize_piano_musicxml.py bai.mid bai_clean.xml --fine
+
+# MIDI: bỏ nốt rác ngắn hơn 50 ms
+python normalize_piano_musicxml.py bai.mid bai_clean.xml --min-dur 0.05
 
 # Đổi channel và volume
 python normalize_piano_musicxml.py input.xml output.xml --channel1 1 --channel2 2 --volume1 90 --volume2 70
@@ -185,6 +215,11 @@ MIDI chơi tay sau khi đặt lên lưới có thể vẫn khiến phần mềm 
 trị ghi được và kết thúc nó ở ranh giới ô lưới, phần chênh thành một nghỉ ngắn. Chỉ ảnh hưởng vài nốt mỗi bài.
 Tắt bằng `--no-tidy`.
 
+Mặc định engine còn không ghi nốt ngắn hơn **16th**: khi ô lưới là 16th hoặc ngắn hơn, mọi hợp âm và độ dài
+nằm trên ô lưới nguyên, nên không còn 32nd vụn hay hợp âm bị tách. Khi ô lưới là 8th hoặc dài hơn thì nửa ô
+vẫn là 16th trở lên, nên 16th/ornament được giữ. `--fine` cho phép nửa ô trong mọi trường hợp (hành vi cũ,
+dùng khi muốn giữ nguyên 32nd).
+
 ### 6. Tempo
 
 Không scale duration theo tempo. MusicXML: giữ tempo đầu tiên tìm thấy (ghi ở P1). MIDI: tempo tìm được từ
@@ -237,6 +272,48 @@ File MusicXML partwise:
 
 ---
 
+## Web UI (nghe thử)
+
+`app.py` là một FastAPI nhỏ phục vụ `static/index.html`: upload file, xem bản sạch, nghe thử và tải về.
+
+```bash
+uv sync                                  # hoặc: pip install -r requirements-web.txt
+uv run uvicorn app:app --reload          # hoặc: python -m uvicorn app:app --reload
+# mở http://127.0.0.1:8000/
+```
+
+Trang làm được:
+
+- upload `.mid`/`.midi`/`.xml`/`.musicxml`/`.mxl`, chỉnh các flag thật của CLI (beats, split, hand,
+  downbeat, max bpm, `--fine`, `--min-dur`, `--lh-max`, `--rh-max`, `--drop-ornaments`, `--simplify`)
+- render bản sạch bằng OpenSheetMusicDisplay; nếu input là MusicXML thì hiện thêm bản gốc cạnh bên
+- Play/Pause/Stop bằng Web Audio + soundfont (`acoustic_grand_piano`), cursor chạy theo MIDI
+- tải `clean.xml` / `clean.mid`, copy câu lệnh CLI đúng với loại input
+- xem report/stats và tempo/key tìm được
+
+Soundfont và các thư viện render được tải từ CDN, nên **cần internet** cho phần nghe thử. Không có mạng
+thì trang vẫn normalize và tải file được, chỉ không có tiếng. Đây là công cụ nghe thử, không phải trình
+soạn nhạc: chưa có loop, click-to-play, hay chọn đoạn.
+
+---
+
+## `xml_regrid_piano.py` (MusicXML -> engine re-grid)
+
+Script phụ đưa MusicXML qua chính engine MIDI để làm sạch lưới, thay vì chỉ gộp voice như đường
+MusicXML -> MusicXML.
+
+```bash
+python xml_regrid_piano.py ban_goc.xml ban_sach.xml
+python xml_regrid_piano.py ban_goc.xml ban_sach.xml --simplify
+```
+
+Cách hoạt động: đọc nốt theo đơn vị phách đen (1 phách đen = 1 "giây" của engine), gọi engine với
+`--max-bpm 90` để engine chọn đúng 1 beat = 1 phách đen, rồi ghi lại MusicXML. Vì vậy `--min-dur` ở
+script này tính bằng **phách đen**, không phải giây. `--key` và `--tempo-mark` mặc định lấy từ file
+input (nếu có), có thể ép bằng flag.
+
+---
+
 ## Dùng như thư viện
 
 ```python
@@ -262,7 +339,11 @@ Có thể mất hoặc đổi:
 - dynamics, pedal, text, lyrics, articulations, directions phức tạp, đổi khóa giữa bài (output luôn Sol/Fa)
 - tempo thứ hai trở đi
 - MIDI: tuplet không được nhận ra (lưới chia đều), cần numpy
+- MIDI: mặc định không ghi nốt ngắn hơn 16th (32nd vụn bị gộp/lên ô); dùng `--fine` để giữ
+- `--simplify` / `--rh-max` giữ nốt cao nhất làm giai điệu: có thể mất nốt giữa của hợp âm
 - MusicXML output từ MIDI chưa có pedal và nhãn ngón (chỉ có trong output `.mid`)
+- flag MIDI-only bị bỏ qua (kèm cảnh báo) ở đường MusicXML -> MusicXML
+- web UI cần internet cho soundfont; chưa có loop/click-to-play
 
 Chưa hỗ trợ: `.mxl` đầu ra, MusicXML -> MIDI, `score-timewise`.
 
@@ -271,9 +352,16 @@ Chưa hỗ trợ: `.mxl` đầu ra, MusicXML -> MIDI, `score-timewise`.
 ## Cấu trúc project
 
 ```text
-piano-normalizer/
+musicxml-piano-normalizer/
 ├── normalize_piano_musicxml.py   # script chính (MIDI + MusicXML)
-├── requirements.txt              # numpy (chỉ cho MIDI)
+├── xml_regrid_piano.py           # MusicXML -> engine MIDI re-grid
+├── app.py                        # FastAPI cho web UI
+├── static/
+│   └── index.html                # UI: render + nghe thử + tải file
+├── requirements.txt              # numpy (CLI)
+├── requirements-web.txt          # fastapi, uvicorn, python-multipart, numpy
+├── pyproject.toml                # metadata + dependency groups (uv)
+├── uv.lock
 ├── test_normalize.py             # pytest
 ├── Makefile
 ├── .gitignore
@@ -283,8 +371,9 @@ piano-normalizer/
 ├── tests/
 │   └── check_output.py
 ├── samples/
-│   ├── input_tempo180.xml
-│   ├── reference_tempo90.xml
+│   ├── Luu_Nien_messy.mid        # MIDI chơi tay, có 32nd vụn
+│   ├── Luu_Nien_messy.musicxml
+│   ├── Luu_Nien_messy_clean.mid
 │   └── piano_messy.xml           # mẫu nhỏ: chord, grace, tie, pickup, đổi nhịp, nhiều voice
 └── output/
 ```

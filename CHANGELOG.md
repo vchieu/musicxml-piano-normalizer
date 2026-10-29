@@ -8,6 +8,19 @@ Tài liệu này ghi lại các thay đổi quan trọng của project.
 
 ### Added
 
+- MIDI: `--fine` (cho phép nửa ô lưới), `--min-dur SEC` (bỏ nốt rác), `--lh-max N` / `--rh-max N`
+  (giới hạn số nốt mỗi hợp âm; tay trái giữ bass, tay phải giữ giai điệu), `--drop-ornaments` (bỏ nốt láy),
+  `--simplify` (preset `--lh-max 3 --rh-max 1 --drop-ornaments`). Giá trị `--lh-max`/`--rh-max` ghi rõ
+  (kể cả `0`) thắng preset.
+- `xml_regrid_piano.py`: đưa MusicXML qua engine MIDI để re-grid (nốt tính bằng phách đen, `--max-bpm 90`
+  làm 1 beat = 1 phách đen); `read_score_meta` lấy key/tempo từ input.
+- `app.py` + `static/index.html`: web UI upload MIDI/MusicXML, render bản sạch bằng OSMD, phát bằng
+  Web Audio + soundfont, cursor theo MIDI, tải `.xml`/`.mid`, copy câu lệnh CLI, hiện bản gốc khi input là
+  MusicXML.
+- `pyproject.toml`, `uv.lock`, `requirements-web.txt` (fastapi, uvicorn, python-multipart, numpy).
+- Test mới: luật 16th floor, `--fine`, `--lh-max`/`--rh-max`, `--min-dur`, `--drop-ornaments`, preset
+  `--simplify`, `revoice(fine=...)`, cảnh báo flag MIDI-only, endpoint `app.normalize`, `xml_regrid_piano.py`.
+- `Makefile`: target `web`; `make test` chạy pytest + `check_output`; input mẫu mới.
 - `normalize_piano_musicxml.py` nhận thêm input MIDI (`.mid`/`.midi`) và xuất `.mid` hoặc `.xml`: engine MIDI
   (từ `normalize.py` cũ, đã gộp vào) tìm lưới và tempo từ cách chơi, đặt nốt lên lưới chính xác, tìm ô nhịp và nốt
   lấy đà, mỗi tay một voice. Cần `numpy` (chỉ cho MIDI), thêm `requirements.txt`.
@@ -42,6 +55,13 @@ Tài liệu này ghi lại các thay đổi quan trọng của project.
 
 ### Changed
 
+- Lưới MIDI mặc định: **không ghi nốt ngắn hơn 16th**. Khi ô lưới là 16th hoặc ngắn hơn, mọi hợp âm và độ
+  dài nằm trên ô lưới nguyên; khi ô lưới là 8th hoặc dài hơn, nửa ô (vẫn ≥ 16th) được phép. `--fine` cho
+  phép nửa ô trong mọi trường hợp (hành vi cũ, tái tạo output cũ byte-for-byte trên 2 file mẫu MIDI).
+- `revoice(clean, ..., fine=False)`: mặc định chỉ độ dài nguyên ô; `fine=True` = hành vi cũ.
+- `--lh-max` / `--rh-max` mặc định `None` (không phải `0`) để phân biệt "không ghi" với "ghi rõ 0".
+- `Makefile`, `README.md`, `AGENTS.md` dùng lại `samples/Luu_Nien_messy.mid` và `samples/piano_messy.xml`
+  thay cho hai file mẫu đã bị xóa.
 - Gộp `normalize.py` vào `normalize_piano_musicxml.py`. Code khác đang `import normalize` đổi thành
   `import normalize_piano_musicxml as normalize` (API `normalize`, `write_midi`, `clean_song`, `Clean` giữ nguyên).
 - Phân tay MusicXML mặc định là `--hand auto` với `--split C4` (trước đây chỉ theo pitch với ngưỡng C5 và `<=`).
@@ -55,6 +75,14 @@ Tài liệu này ghi lại các thay đổi quan trọng của project.
 
 ### Fixed
 
+- `app.py` và `xml_regrid_piano.py` gọi `N.denoise` / `--phase` không tồn tại (luôn 500/crash); đã bỏ và
+  dùng đúng option của `normalize`.
+- Web UI in các flag không tồn tại (`--max-chord`, `--min-len`, `--min-vel-ratio`, `--merge-gap`); giờ chỉ
+  dùng flag thật và câu lệnh đúng theo loại input.
+- Flag MIDI-only bị bỏ qua im lặng trên đường MusicXML -> MusicXML; giờ in cảnh báo stderr.
+- `--simplify` ghi đè `--lh-max 0` / `--rh-max 0`; giờ giá trị ghi rõ thắng preset.
+- `xml_regrid_piano.py` tính sai độ dài ô nhịp khi advance (giây vs phách đen); giờ dùng `measure_end` /
+  `expected_duration` theo phách đen.
 - Engine MIDI: bộ đếm `merged` dùng biến `_` bị che trong generator (đã đổi tên biến).
 - MusicXML: note có `<chord/>` làm thời gian chạy tiếp, nên mọi note sau chord bị lệch và note trong chord bị
   đặt sai chỗ. Chord giờ nằm cùng onset với note trước.
