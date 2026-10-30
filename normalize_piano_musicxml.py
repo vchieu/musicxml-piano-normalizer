@@ -453,7 +453,7 @@ def normalize(notes: Sequence, controls: Optional[Sequence[tuple]] = None, beats
               rest_min: Optional[int] = None, cells_per_beat: Optional[int] = None,
               downbeat: str = "auto", tidy: bool = True, fine: bool = False,
               min_dur: float = MIN_DUR, lh_max: int = 0, rh_max: int = 0,
-              drop_ornaments: bool = False) -> Clean:
+              drop_ornaments: bool = False, bar_anchor: Optional[float] = None) -> Clean:
     """
     Clean `notes` (objects with .pitch .start .end .velocity .hand, hands already decided).
 
@@ -474,6 +474,8 @@ def normalize(notes: Sequence, controls: Optional[Sequence[tuple]] = None, beats
     lh_max, rh_max:  at most this many notes in a left / right hand chord (0: no limit). Left hand keeps
                      the bass first; right hand keeps the highest (melody) note first.
     drop_ornaments:  drop grace / mordent / trill notes (very short chords a step from a longer one).
+    bar_anchor:      a time (seconds on the input clock) known to be a bar line (e.g. from a MusicXML
+                     source); with downbeat="auto" it fixes where bars fall instead of guessing.
     controls:        [(time, controller, value)], mapped onto the new clock.
     """
     if np is None:
@@ -526,6 +528,8 @@ def normalize(notes: Sequence, controls: Optional[Sequence[tuple]] = None, beats
     first_u = min(u for u, _, _, _ in items)
     if downbeat == "first":
         phase = first_u % bar_u
+    elif bar_anchor is not None:
+        phase = (2 * int(round((bar_anchor - origin) / cell))) % bar_u
     else:
         phase = _downbeat(items, bar_u, upb)
     # bar lines fall on the units congruent to `phase` (mod bar_u): u0 is the last one at or
@@ -647,7 +651,7 @@ def revoice(clean: Clean, voices: str = "single", chord_end: str = "median", tid
     pairs = []
     for hand in (RIGHT, LEFT):
         for u, ends, ns in _voice(per[hand], voices, chord_end, rest_min, counters, tidy,
-                                  cells_only=not fine):
+                                  cells_only=not fine and clean.units_per_beat >= 8):   # giống normalize: ô lưới 8th thì nửa ô (16th) vẫn hợp lệ
             for n, e in zip(ns, ends):
                 pairs.append((n, replace(n, start=u * unit, end=e * unit, hand=hand,
                                          track=0 if hand == RIGHT else 1)))
@@ -1774,6 +1778,8 @@ def load_musicxml_root(path):
                                  and not n.startswith("META-INF")), None)
             if rootfile is None:
                 raise ValueError("không tìm thấy file MusicXML trong .mxl")
+            if z.getinfo(rootfile).file_size > 64 * 1024 * 1024:
+                raise ValueError(".mxl giải nén quá lớn (> 64 MB)")
             root = ET.fromstring(z.read(rootfile))
     else:
         root = ET.parse(path).getroot()
@@ -1957,14 +1963,17 @@ def clean_to_sequences(clean: Clean, hand: str):
             by_u.setdefault(int(round(n.start / unit)), []).append((n.pitch, int(round(n.end / unit))))
 
     segs, cur = [], 0
-    for s in sorted(by_u):
-        e = max(e for _, e in by_u[s])
-        s = max(s, cur)
+    for s0 in sorted(by_u):
+        e = max(e for _, e in by_u[s0])
+        if s0 < cur:
+            raise ValueError("write_musicxml cần mỗi tay một chuỗi không chồng nhau "
+                             "(normalize(voices=\"single\")); nốt ở unit %d chồng lên nốt trước" % s0)
+        s = s0
         if e <= s:
             continue
         if s > cur:
             segs.append((cur, s, None))
-        segs.append((s, e, sorted({p for p, _ in by_u[s]})))
+        segs.append((s, e, sorted({p for p, _ in by_u[s0]})))
         cur = e
     total = max(nbars * bar_u, cur)
     nbars = -(-total // bar_u)

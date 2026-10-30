@@ -292,6 +292,14 @@ tempo marking. `--min-dur` của script này tính bằng phách đen.
 - `extract_notes_from_musicxml(path, split_midi, hand="auto", split_chords=False)`: đọc MusicXML thành
   `Note` với thời gian tính bằng **phách đen** (không phải giây); dùng `N.load_musicxml_root`, `parse_measure`,
   `assign_hand` của đường MusicXML.
+  Phân tay dùng `build_part_hand_map` như `run_musicxml` (tay theo part khi không có staff); `--split-chords`
+  chỉ có nghĩa với `auto`/`pitch`. Nốt nối (tie) được gộp thành một nốt dài (khóa part/voice/pitch, liền nhau).
+- `read_bar_meta(path)` -> `(beats, anchor)`: số phách của x/4 đầu tiên và thời điểm (phách đen) của vạch nhịp
+  đầu (0, hoặc độ dài ô lấy đà). `main` dùng chúng cho `--beats` (mặc định theo file) và `bar_anchor` của
+  `normalize` (chỉ khi `--downbeat auto` và beats khớp file).
+- `normalize(..., bar_anchor=t)`: `t` (giây trên đồng hồ input) là một vạch nhịp đã biết; với `downbeat="auto"`
+  nó thay `_downbeat`. `revoice` dùng `cells_only = not fine and units_per_beat >= 8` giống `normalize`.
+- `app.py`: `normalize` (async) đọc file, kiểm tra `MAX_UPLOAD` rồi gọi `_normalize_sync` qua `run_in_threadpool`.
 - `main`: `normalize(notes, max_bpm=90, ...)` (1 beat = 1 phách đen), rồi `write_musicxml`; `clean.bpm` được
   ghi đè bằng `--tempo-mark` để tempo marking đúng. `--min-dur` tính bằng phách đen.
 - `--key` / `--tempo-mark` mặc định lấy từ input; ép bằng flag nếu cần. `--fine`, `--min-dur`, `--lh-max`,

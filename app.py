@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse
 
 import normalize_piano_musicxml as N
@@ -75,9 +76,9 @@ def _command(kind, *, beats, split, hand, split_chords, downbeat, max_bpm, fine,
     return " ".join(parts)
 
 
-@app.post("/normalize")
-async def normalize(
-    file: UploadFile = File(...),
+def _normalize_sync(
+    data: bytes,
+    filename: str,
     beats: int = Form(4),
     split: str = Form("C4"),
     hand: str = Form("auto"),
@@ -91,7 +92,6 @@ async def normalize(
     drop_ornaments: bool = Form(False),
     simplify: bool = Form(False),
 ):
-    filename = file.filename or "input.mid"
     suffix = os.path.splitext(filename)[1].lower()
 
     if suffix in N._MIDI_EXT:
@@ -126,7 +126,7 @@ async def normalize(
     with tempfile.TemporaryDirectory() as td:
         src = os.path.join(td, "input" + suffix)
         with open(src, "wb") as fh:
-            fh.write(await file.read())
+            fh.write(data)
 
         try:
             if kind == "midi":
@@ -135,6 +135,7 @@ async def normalize(
                 controls = inp.controls or None
                 fifths = inp.key_fifths
                 bpm_hint = None
+                beats_eff, bar_anchor = beats, None
                 engine_bpm = max_bpm
                 engine_min_dur = min_dur
             else:
@@ -142,11 +143,17 @@ async def normalize(
                                                       split_chords=split_chords)
                 controls = None
                 fifths, bpm_hint = X.read_score_meta(src)
+                beats_in, anchor_in = X.read_bar_meta(src)
+                if beats_in and beats in (4, beats_in):
+                    beats_eff = beats_in
+                    bar_anchor = anchor_in if downbeat == "auto" else None
+                else:
+                    beats_eff, bar_anchor = beats, None
                 # Nốt đưa vào engine theo đơn vị phách đen: 1 beat = 1 phách đen.
                 engine_bpm = 90.0
                 engine_min_dur = 0.0
 
-            clean = N.normalize(notes, controls=controls, beats_per_bar=beats,
+            clean = N.normalize(notes, controls=controls, beats_per_bar=beats_eff, bar_anchor=bar_anchor,
                                 max_bpm=engine_bpm, voices="single", chord_end="median",
                                 downbeat=downbeat, tidy=True, fine=fine,
                                 min_dur=engine_min_dur, lh_max=lh, rh_max=rh,
@@ -192,6 +199,37 @@ async def normalize(
         "beats": clean.beats_per_bar,
         "key": key,
     }
+
+
+MAX_UPLOAD = 20 * 1024 * 1024  # byte
+
+
+@app.post("/normalize")
+async def normalize(
+    file: UploadFile = File(...),
+    beats: int = Form(4),
+    split: str = Form("C4"),
+    hand: str = Form("auto"),
+    split_chords: bool = Form(False),
+    downbeat: str = Form("auto"),
+    max_bpm: float = Form(130.0),
+    fine: bool = Form(False),
+    min_dur: float = Form(0.0),
+    lh_max: Optional[int] = Form(None),
+    rh_max: Optional[int] = Form(None),
+    drop_ornaments: bool = Form(False),
+    simplify: bool = Form(False),
+):
+    data = await file.read()
+    if len(data) > MAX_UPLOAD:
+        raise HTTPException(413, "File quá lớn (tối đa %d MB)" % (MAX_UPLOAD // (1024 * 1024)))
+    # Phần nặng (numpy, vài giây với bài dài) chạy trong threadpool, không chặn event loop.
+    return await run_in_threadpool(
+        _normalize_sync, data, file.filename or "input.mid",
+        beats=beats, split=split, hand=hand, split_chords=split_chords, downbeat=downbeat,
+        max_bpm=max_bpm, fine=fine, min_dur=min_dur, lh_max=lh_max, rh_max=rh_max,
+        drop_ornaments=drop_ornaments, simplify=simplify,
+    )
 
 
 if __name__ == "__main__":

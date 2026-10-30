@@ -55,6 +55,9 @@ Tài liệu này ghi lại các thay đổi quan trọng của project.
 
 ### Changed
 
+- `xml_regrid_piano.py`: `--beats` mặc định lấy từ file input (không có / không phải x/4 thì 4). Thêm
+  `read_bar_meta()`; `normalize(..., bar_anchor=...)` ghi đè việc đoán downbeat khi biết vạch nhịp.
+
 - Lưới MIDI mặc định: **không ghi nốt ngắn hơn 16th**. Khi ô lưới là 16th hoặc ngắn hơn, mọi hợp âm và độ
   dài nằm trên ô lưới nguyên; khi ô lưới là 8th hoặc dài hơn, nửa ô (vẫn ≥ 16th) được phép. `--fine` cho
   phép nửa ô trong mọi trường hợp (hành vi cũ, tái tạo output cũ byte-for-byte trên 2 file mẫu MIDI).
@@ -74,6 +77,18 @@ Tài liệu này ghi lại các thay đổi quan trọng của project.
 - Cập nhật `AGENTS.md` với quy tắc sửa code phải đi kèm cập nhật test và tài liệu.
 
 ### Fixed
+
+- `xml_regrid_piano.py` / web UI: nốt nối (tie) được gộp thành một nốt dài, không còn bị gõ lại ở bản
+  sạch và file `.mid`.
+- `xml_regrid_piano.py` / web UI: phân tay theo part như `run_musicxml` (part trầm là tay trái khi không có
+  staff); `--split-chords` chỉ áp dụng cho `--hand auto/pitch`, không còn ghi đè `--hand staff`.
+- `revoice()` dùng cùng luật "16th floor" như `normalize` (chỉ ép ô nguyên khi `units_per_beat >= 8`); trước
+  đây với ô lưới 8th, 16th lẻ bị kéo thành 8th.
+- `xml_regrid_piano.py` / web UI: số phách lấy từ số chỉ nhịp x/4 của file gốc và vạch nhịp đầu (kể cả ô
+  nhịp lấy đà) được truyền cho engine qua `bar_anchor`, không còn mặc định 4/4 và đoán downbeat.
+- `app.py`: phần xử lý nặng chạy trong threadpool (không chặn event loop); giới hạn upload 20 MB (413).
+- `.mxl`: từ chối file giải nén quá 64 MB.
+- `write_musicxml` báo `ValueError` rõ ràng khi nốt cùng tay chồng nhau (trước đây `KeyError`).
 
 - `app.py` và `xml_regrid_piano.py` gọi `N.denoise` / `--phase` không tồn tại (luôn 500/crash); đã bỏ và
   dùng đúng option của `normalize`.

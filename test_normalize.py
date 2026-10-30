@@ -595,3 +595,129 @@ def test_xml_regrid_script_runs(tmp_path):
         capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
     )
     assert check.returncode == 0, check.stdout + check.stderr
+
+
+# --------------------------------------------------------------------------- #
+# Patch: revoice 16th floor, tie, phân tay theo part, nhịp x/4, write_musicxml chồng nốt
+# --------------------------------------------------------------------------- #
+
+def _eighth_cell_piece(bars=16, cell=0.35):
+    # LH gõ mỗi ô (8th); RH thưa: một nốt dài mỗi ô nhịp, và cứ 4 ô nhịp mới có một 16th lẻ.
+    # 16th lẻ phải đủ hiếm để find_cell vẫn chọn 8th làm ô lưới (>= 90% onset nằm trên lưới 8th).
+    notes = []
+    for i in range(bars * 8):
+        notes.append(Note(40 + (i % 5), i * cell, i * cell + cell * 0.9, 90, 0, "L"))
+    for b in range(bars):
+        t = b * 8 * cell
+        notes.append(Note(72, t, t + cell * 1.9, 90, 0, "R"))
+        if b % 4 == 0:
+            t2 = (b * 8 + 3) * cell + cell / 2
+            notes.append(Note(84, t2, t2 + cell * 0.4, 90, 0, "R"))
+    return notes
+
+
+def test_revoice_keeps_sixteenths_when_the_cell_is_an_eighth():
+    clean = N.normalize(_eighth_cell_piece())
+    assert clean.units_per_beat == 4
+    short = {(n.hand, n.pitch, round(n.start / clean.unit)) for n in clean.notes
+             if round((n.end - n.start) / clean.unit) == 1}
+    assert any(k[1] == 84 for k in short)            # có 16th lẻ đứng riêng
+
+    again, _ = N.revoice(clean)
+    got = {(n.hand, n.pitch, round(n.start / again.unit)): round((n.end - n.start) / again.unit)
+           for n in again.notes}
+    assert all(got.get(k) == 1 for k in short)        # không bị kéo thành 8th
+
+
+_TIE_XML = ('<?xml version="1.0"?><score-partwise version="3.1"><part-list>'
+            '<score-part id="P1"><part-name>x</part-name></score-part></part-list><part id="P1">'
+            '<measure number="1"><attributes><divisions>1</divisions><time><beats>4</beats>'
+            '<beat-type>4</beat-type></time></attributes>'
+            '<note><pitch><step>E</step><octave>5</octave></pitch><duration>2</duration><voice>1</voice></note>'
+            '<note><pitch><step>G</step><octave>5</octave></pitch><duration>2</duration><tie type="start"/>'
+            '<voice>1</voice><notations><tied type="start"/></notations></note></measure>'
+            '<measure number="2">'
+            '<note><pitch><step>G</step><octave>5</octave></pitch><duration>2</duration><tie type="stop"/>'
+            '<voice>1</voice><notations><tied type="stop"/></notations></note>'
+            '<note><pitch><step>C</step><octave>5</octave></pitch><duration>2</duration><voice>1</voice></note>'
+            '</measure></part></score-partwise>')
+
+
+def test_regrid_joins_tied_notes(tmp_path):
+    import xml_regrid_piano as X
+    src = tmp_path / "tie.xml"
+    src.write_text(_TIE_XML, encoding="utf-8")
+    notes = X.extract_notes_from_musicxml(str(src), 60)
+    got = sorted((n.pitch, n.start, n.end) for n in notes)
+    assert got == [(72, 6.0, 8.0), (76, 0.0, 2.0), (79, 2.0, 6.0)]   # G5 là một nốt dài 4 phách
+
+
+def test_regrid_hands_follow_parts_when_there_is_no_staff(tmp_path):
+    import xml_regrid_piano as X
+    head = ('<?xml version="1.0"?><score-partwise version="3.1"><part-list>'
+            '<score-part id="P1"><part-name>a</part-name></score-part>'
+            '<score-part id="P2"><part-name>b</part-name></score-part></part-list>')
+    meas = ('<measure number="1"><attributes><divisions>1</divisions><time><beats>4</beats>'
+            '<beat-type>4</beat-type></time></attributes><note><pitch><step>%s</step>'
+            '<octave>%d</octave></pitch><duration>4</duration><voice>1</voice></note></measure>')
+    src = tmp_path / "two.xml"
+    src.write_text(head + '<part id="P1">' + meas % ("C", 6) + '</part>'
+                   + '<part id="P2">' + meas % ("E", 4) + '</part></score-partwise>', encoding="utf-8")
+    # E4 = 64 >= C4 nhưng thuộc part trầm -> tay trái (code cũ cho tay phải)
+    notes = X.extract_notes_from_musicxml(str(src), 60)
+    assert {n.pitch: n.hand for n in notes} == {84: "R", 64: "L"}
+    # --split-chords không được ghi đè --hand staff (code cũ cho E4 sang tay phải theo pitch)
+    notes = X.extract_notes_from_musicxml(str(src), 60, hand="staff", split_chords=True)
+    assert {n.pitch: n.hand for n in notes} == {84: "R", 64: "L"}
+
+
+def _three_four_xml(bars=10):
+    def note(step, octave, dur, voice):
+        return ("<note><pitch><step>%s</step><octave>%d</octave></pitch><duration>%d</duration>"
+                "<voice>%d</voice></note>" % (step, octave, dur, voice))
+    out = ['<?xml version="1.0"?><score-partwise version="3.1"><part-list>'
+           '<score-part id="P1"><part-name>x</part-name></score-part></part-list><part id="P1">']
+    for b in range(bars):
+        out.append('<measure number="%d">' % (b + 1))
+        if b == 0:
+            out.append("<attributes><divisions>2</divisions><time><beats>3</beats>"
+                       "<beat-type>4</beat-type></time></attributes>")
+        out.append(note("C", 3, 6, 1))                       # bass: cả ô nhịp, đứng ở phách 1
+        out.append("<backup><duration>6</duration></backup>")
+        for i, d in enumerate((2, 1, 1, 2)):
+            out.append(note("EFGAB"[(b + i) % 5], 5, d, 2))
+        out.append("</measure>")
+    out.append("</part></score-partwise>")
+    return "".join(out)
+
+
+def test_regrid_takes_beats_and_barlines_from_the_time_signature(tmp_path):
+    import xml_regrid_piano as X
+    src = tmp_path / "waltz.xml"
+    src.write_text(_three_four_xml(), encoding="utf-8")
+    assert X.read_bar_meta(str(src)) == (3, 0.0)
+
+    dst = str(tmp_path / "out.xml")
+    X.main([str(src), dst])                                  # không truyền --beats
+    root = ET.parse(dst).getroot()
+    assert root.find(".//attributes/time/beats").text == "3"
+    div = int(root.find(".//attributes/divisions").text)
+    got, voices, bad = _read_xml(dst)
+    assert voices == {"1"} and not bad
+    bass = [s for _, s, _ in got["P2"]]
+    assert len(bass) == 10 and all(s % (3 * div) == 0 for s in bass)   # bass luôn mở ô nhịp
+
+
+def test_bar_anchor_fixes_the_downbeat():
+    notes, _ = _piece(bars=8)
+    clean = N.normalize(notes)
+    # đẩy vạch nhịp lệch 1 phách bằng anchor: nốt đầu phải nằm ở phách thứ 2 của ô nhịp
+    shifted = N.normalize(notes, bar_anchor=notes[0].start - (60 / clean.bpm))
+    assert shifted.stats["phase"] != clean.stats["phase"] or shifted.stats["pickup_units"] != 0
+
+
+def test_write_musicxml_rejects_overlapping_voices(tmp_path):
+    notes, _ = _piece(bars=4)
+    clean = N.normalize(notes, voices="keep")                # giữ nốt ngân: các nốt tay trái chồng nhau
+    with pytest.raises(ValueError):
+        N.write_musicxml(str(tmp_path / "x.xml"), clean)
