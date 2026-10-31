@@ -118,6 +118,13 @@
     #score-after {
       min-height: 220px;
     }
+    /* patch: one-line view */
+    #score-after.oneline {
+      position: relative;
+      overflow: hidden;
+      min-height: 0;
+    }
+
   </style>
 </head>
 
@@ -213,6 +220,10 @@
     <button id="downloadXml" disabled>Download .xml</button>
     <button id="downloadMidi" disabled>Download .mid</button>
     <button id="copyCommand">Copy command</button>
+    <label style="display: inline-flex; align-items: center; gap: 6px; font-size: 13px;">
+      <input type="checkbox" id="oneLine" checked />
+      Hiện 1 dòng
+    </label>
   </div>
 
   <div id="status"></div>
@@ -420,22 +431,361 @@
       }
     }
 
+    /* patch: cursor-by-tick + space-toggle */
+    const TICKS_PER_QUARTER = 480;   // = PPQ của write_midi
+    let cursorTicks = [];            // tick của từng bước cursor OSMD (rỗng = không dựng được)
+    let cursorIdx = 0;               // bước cursor hiện tại
+    let cursorFirstSkipped = false;  // chỉ dùng cho fallback khi không có bảng tick
+
+    function osmdIterator(c) {
+      return c.Iterator || c.iterator;
+    }
+
+    // Tick của bước hiện tại theo OSMD (chỉ để dự phòng; đường chính là xmlStepTicks)
+    function stepTick(it) {
+      const cands = [it.CurrentSourceTimestamp, it.CurrentTimeStamp,
+                     it.CurrentEnrolledTimestamp, it.currentTimeStamp];
+      for (let i = 0; i < cands.length; i++) {
+        const f = cands[i];
+        if (f && typeof f.RealValue === "number") {
+          // RealValue tính bằng nốt tròn: 1 phách đen = 0.25
+          return Math.round(f.RealValue * 4 * TICKS_PER_QUARTER);
+        }
+      }
+      return null;
+    }
+
+    // Mỗi nốt hoặc dấu nghỉ (không phải grace, không phải <chord/>) của bất kỳ part nào là một bước cursor.
+    function xmlStepTicks(xml) {
+      const doc = new DOMParser().parseFromString(xml, "application/xml");
+      if (doc.getElementsByTagName("parsererror").length) return [];
+      const seen = new Set();
+      const parts = doc.getElementsByTagName("part");
+      for (let p = 0; p < parts.length; p++) {
+        let base = 0;                // tick đầu ô nhịp
+        let div = 1;
+        const measures = parts[p].getElementsByTagName("measure");
+        for (let m = 0; m < measures.length; m++) {
+          let pos = 0;
+          let maxPos = 0;
+          const kids = measures[m].children;
+          for (let k = 0; k < kids.length; k++) {
+            const el = kids[k];
+            const tag = el.tagName;
+            const durEl = el.getElementsByTagName("duration")[0];
+            const dur = durEl ? (parseInt(durEl.textContent, 10) || 0) : 0;
+            if (tag === "attributes") {
+              const d = el.getElementsByTagName("divisions")[0];
+              if (d) div = parseInt(d.textContent, 10) || div;
+            } else if (tag === "note") {
+              if (el.getElementsByTagName("grace").length) continue;
+              if (!el.getElementsByTagName("chord").length) {
+                seen.add(base + Math.round(pos * TICKS_PER_QUARTER / div));
+                pos += dur;
+              }
+            } else if (tag === "forward") {
+              pos += dur;
+            } else if (tag === "backup") {
+              pos -= dur;
+            }
+            if (pos > maxPos) maxPos = pos;
+          }
+          base += Math.round(maxPos * TICKS_PER_QUARTER / div);
+        }
+      }
+      return Array.from(seen).sort(function (a, b) { return a - b; });
+    }
+
+    function buildCursorMap(xml) {
+      cursorTicks = [];
+      cursorIdx = 0;
+      try {
+        const c = osmdAfter && osmdAfter.cursor;
+        if (!c) return;
+        const wanted = xmlStepTicks(xml);
+        c.hide();                    // hide trước: reset()/next() không vẽ lại, không cuộn trang
+        c.reset();
+        const it = osmdIterator(c);
+        const adv = (it && typeof it.moveToNext === "function")
+          ? function () { it.moveToNext(); }
+          : function () { c.next(); };
+        const osmdTicks = [];
+        let guard = 0;
+        while (it && !it.EndReached && guard++ < 200000) {
+          osmdTicks.push(stepTick(it));
+          adv();
+        }
+        c.reset();
+        c.hide();
+        if (wanted.length && wanted.length === osmdTicks.length) {
+          cursorTicks = wanted;
+        } else if (osmdTicks.length && osmdTicks.every(function (t, i) {
+          return t !== null && (i === 0 || t > osmdTicks[i - 1]);
+        })) {
+          cursorTicks = osmdTicks;
+        }
+        if (!cursorTicks.length || wanted.length !== osmdTicks.length) {
+          console.warn("cursor map: XML " + wanted.length + " bước, OSMD " + osmdTicks.length +
+                       " bước, dùng " + (cursorTicks.length ? "OSMD timestamp" : "fallback đếm Note on"));
+        }
+      } catch (e) {
+        cursorTicks = [];
+        console.warn("cursor map lỗi:", e);
+      }
+    }
+
     function cursorReset() {
+      cursorIdx = 0;
+      cursorFirstSkipped = false;
       try {
         if (osmdAfter && osmdAfter.cursor) {
           osmdAfter.cursor.reset();
           osmdAfter.cursor.show();
+          cursorFollow();
         }
       } catch (e) { /* OSMD cursor is best-effort */ }
     }
 
-    function cursorNext() {
+    // Đưa cursor tới bước cuối cùng có tick <= tick MIDI hiện tại.
+    function cursorNext(tick) {
       try {
-        if (osmdAfter && osmdAfter.cursor) osmdAfter.cursor.next();
+        const c = osmdAfter && osmdAfter.cursor;
+        if (!c) return;
+        if (!cursorTicks.length || typeof tick !== "number") {
+          // fallback: cursor đã đứng sẵn ở bước đầu nên bỏ qua Note on đầu tiên
+          if (!cursorFirstSkipped) { cursorFirstSkipped = true; return; }
+          c.next();
+          cursorFollow();
+          return;
+        }
+        let target = cursorIdx;
+        while (target + 1 < cursorTicks.length && cursorTicks[target + 1] <= tick) target++;
+        const from = cursorIdx;
+        while (cursorIdx < target) {
+          c.next();
+          cursorIdx++;
+        }
+        if (cursorIdx !== from) cursorFollow();
       } catch (e) { /* OSMD cursor is best-effort */ }
     }
 
-    function cursorHide() {
+/* patch: cursor follows playback tick */
+    let cursorTimer = null;
+
+    function cursorTick() {
+      if (!playing || !midiPlayer || typeof midiPlayer.getCurrentTick !== "function") {
+        stopCursorTimer();
+        return;
+      }
+      if (!cursorTicks.length) return;   // không có bảng tick: chỉ theo Note on
+      try { cursorNext(midiPlayer.getCurrentTick()); } catch (e) { /* best-effort */ }
+    }
+
+    function startCursorTimer() {
+      if (cursorTimer === null) cursorTimer = setInterval(cursorTick, 16);
+    }
+
+    function stopCursorTimer() {
+      if (cursorTimer !== null) { clearInterval(cursorTimer); cursorTimer = null; }
+    }
+
+    /* patch: one-line view */
+    const ONE_LINE_PAD = 32;   // dự phòng khi không đo được từng dòng
+    const BAND_PAD = 12;       // đệm trên/dưới quanh phần thực sự được vẽ của dòng
+    let oneLineH = 0;          // chiều cao dự phòng theo cursor
+    let oneLineIv = null;      // [top, bottom] của mọi nét vẽ (tọa độ nội dung), sắp theo top tăng dần
+    let oneLineIvB = null;     // cùng dữ liệu, sắp theo bottom giảm dần
+    let oneLineBand = null;    // dòng đang hiển thị (cache)  /* one-line: bands */ /* one-line: initial view */
+
+    function cursorImg() {
+      const c = osmdAfter && osmdAfter.cursor;
+      const box = $("score-after");
+      return (c && c.cursorElement) || (box && box.querySelector('img[id^="cursorImg"]')) || null;
+    }
+
+    // Ghi lại phạm vi dọc của mọi nét vẽ trong SVG (một lần sau mỗi lần render).
+    function measureBands() {
+      oneLineIv = [];
+      oneLineIvB = [];
+      oneLineBand = null;
+      const box = $("score-after");
+      const svg = box && box.querySelector("svg");
+      if (!svg) return;
+      const origin = box.getBoundingClientRect().top - box.scrollTop;   // gốc tọa độ nội dung
+      const els = svg.querySelectorAll("path, rect, text, line, ellipse, circle, polygon, polyline");
+      for (let i = 0; i < els.length; i++) {
+        const r = els[i].getBoundingClientRect();
+        if (r.width === 0 && r.height === 0) continue;     // phần tử không được vẽ
+        if (!isFinite(r.top) || !isFinite(r.bottom)) continue;
+        oneLineIv.push([r.top - origin, r.bottom - origin]);
+      }
+      oneLineIv.sort(function (x, y) { return x[0] - y[0]; });
+      oneLineIvB = oneLineIv.slice().sort(function (x, y) { return y[1] - x[1]; });
+    }
+
+    // Phạm vi của dòng chứa vùng [top, bottom] (vùng cursor, đã bao các khuông của dòng): mở rộng lên/xuống
+    // theo mọi nét vẽ chạm hoặc cách nhau không quá `tol`. Nhờ đó nốt quá cao/thấp cùng đường kẻ phụ, dòng
+    // tempo... được tính vào dòng, còn khoảng trắng giữa hai dòng thì không.
+    function extentFor(top, bottom, tol) {
+      let t = top, b = bottom;
+      for (let i = 0; i < oneLineIv.length; i++) {
+        const v = oneLineIv[i];
+        if (v[0] > b + tol) break;
+        if (v[1] > b) b = v[1];
+      }
+      for (let i = 0; i < oneLineIvB.length; i++) {
+        const v = oneLineIvB[i];
+        if (v[1] < t - tol) break;
+        if (v[0] < t) t = v[0];
+      }
+      return { top: t, bottom: b };
+    }
+
+    // Dòng nhạc đầu tiên, xác định từ chính hình vẽ (không cần cursor): các nét kẻ khuông là những nét ngang
+    // mảnh và dài; bản chuẩn hóa luôn có 2 khuông x 5 dòng kẻ, nên dòng đầu là 10 nét kẻ đầu tiên. Trả về
+    // [top, bottom] của chúng (tọa độ nội dung) hoặc null.
+    function firstStaffSeed() {
+      const box = $("score-after");
+      const svg = box && box.querySelector("svg");
+      if (!svg) return null;
+      const origin = box.getBoundingClientRect().top - box.scrollTop;
+      const minW = Math.max(60, (svg.getBoundingClientRect().width || 0) * 0.05);
+      const lines = [];
+      const els = svg.querySelectorAll("path, rect, line");
+      for (let i = 0; i < els.length; i++) {
+        const r = els[i].getBoundingClientRect();
+        if (r.height > 2 || r.width < minW) continue;
+        lines.push([r.top - origin, r.bottom - origin]);
+      }
+      if (!lines.length) return null;
+      lines.sort(function (x, y) { return x[0] - y[0]; });
+      const picked = [lines[0]];
+      for (let i = 1; i < lines.length && picked.length < 10; i++) {
+        if (lines[i][0] > picked[picked.length - 1][0] + 2) picked.push(lines[i]);   // bỏ nét trùng hàng
+      }
+      return [picked[0][0], picked[picked.length - 1][1]];
+    }
+
+    // Lúc chưa phát: khung hiện đúng dòng đầu của bản nhạc (không lộ tiêu đề phía trên).
+    function oneLineInitialView() {
+      const box = $("score-after");
+      if (!box || !box.classList.contains("oneline") || playbackStarted) return;
+      try {
+        measureBands();
+        const seed = firstStaffSeed();
+        if (!seed) return;
+        const sh = Math.max(1, seed[1] - seed[0]);
+        const band = extentFor(seed[0], seed[1], Math.max(4, sh * 0.12));
+        if (band.bottom - band.top > sh * 6) return;
+        oneLineBand = band;
+        box.style.height = Math.ceil(band.bottom - band.top + 2 * BAND_PAD) + "px";
+        box.scrollTop = Math.max(0, Math.round(band.top - BAND_PAD));
+      } catch (e) { /* best-effort */ }
+    }
+
+    // OSMD có thể vẽ lại / bố cục đổi sau khi load: định vị lại dòng đầu vài lần
+    function scheduleOneLineInitialView() {
+      [150, 600, 1500].forEach(function (ms) { setTimeout(oneLineInitialView, ms); });
+    }
+
+    // Khung #score-after vừa đủ cao cho dòng đang phát (kể cả nốt rất cao/thấp); cursor sang dòng mới
+    // thì khung đổi chiều cao và cuộn tới dòng đó.
+    function cursorFollow() {
+      const box = $("score-after");
+      if (!box || !box.classList.contains("oneline")) return;
+      try {
+        const el = cursorImg();
+        if (!el) return;
+        const er = el.getBoundingClientRect();
+        const y0 = er.top - box.getBoundingClientRect().top + box.scrollTop;   // đỉnh cursor, tọa độ nội dung
+        let top = y0 - ONE_LINE_PAD;
+        let h = oneLineH;
+        let band = null;
+        if (oneLineIv && oneLineIv.length && er.height > 0) {
+          const cy = y0 + er.height / 2;
+          if (oneLineBand && cy >= oneLineBand.top && cy <= oneLineBand.bottom) {
+            band = oneLineBand;
+          } else {
+            band = extentFor(y0, y0 + er.height, Math.max(4, er.height * 0.12));
+            // kết quả quá cao (vd. có nền/khung phủ cả trang) thì bỏ, dùng chiều cao dự phòng
+            if (band.bottom - band.top > er.height * 6) band = null; else oneLineBand = band;
+          }
+        }
+        if (band) {
+          top = band.top - BAND_PAD;
+          h = Math.max(band.bottom - band.top, er.height) + 2 * BAND_PAD;
+        }
+        h = Math.ceil(h);
+        if (box.style.height !== h + "px") box.style.height = h + "px";
+        const target = Math.max(0, Math.round(top));
+        if (Math.abs(box.scrollTop - target) > 2) box.scrollTop = target;
+      } catch (e) { /* best-effort */ }
+    }
+
+    function applyOneLine() {
+      const box = $("score-after");
+      const cb = $("oneLine");
+      if (!box) return;
+      const on = !!(cb && cb.checked);
+      // 1 dòng: tự cuộn bằng cursorFollow, không để OSMD cuộn cả trang theo cursor
+      try { if (osmdAfter) osmdAfter.FollowCursor = !on; } catch (e) { /* ignore */ }
+      if (!on) {
+        box.classList.remove("oneline");
+        box.style.height = "";
+        box.scrollTop = 0;
+        return;
+      }
+      let keepShown = false;
+      let c = null;
+      try {
+        c = osmdAfter && osmdAfter.cursor;
+        if (!c) return;
+        keepShown = playbackStarted;   // đang phát / tạm dừng thì cursor đang hiện
+        c.show();
+        const el = cursorImg();
+        const h = el ? el.getBoundingClientRect().height : 0;
+        if (h > 0) oneLineH = Math.ceil(h + 2 * ONE_LINE_PAD);
+        measureBands();
+        if (!oneLineH) {                     // cursor chưa đo được: lấy chiều cao từ khuông nhạc
+          const sd = firstStaffSeed();
+          if (sd) oneLineH = Math.ceil(sd[1] - sd[0] + 2 * ONE_LINE_PAD);
+        }
+        if (!oneLineH) {                     // vẫn không đo được: giữ hiển thị bình thường
+          box.classList.remove("oneline");
+          box.style.height = "";
+        } else {
+          box.classList.add("oneline");
+          box.style.height = oneLineH + "px";
+          if (keepShown) {
+            cursorFollow();
+          } else {
+            oneLineInitialView();            // chưa phát: vào thẳng dòng đầu, không dựa vào cursor
+            scheduleOneLineInitialView();
+          }
+        }
+      } catch (e) {
+        box.classList.remove("oneline");
+        box.style.height = "";
+      }
+      try { if (c && !keepShown) c.hide(); } catch (e) { /* ignore */ }
+    }
+
+    if ($("oneLine")) $("oneLine").addEventListener("change", applyOneLine);
+
+    // đổi kích thước cửa sổ: OSMD vẽ lại, đo lại các dòng
+    let oneLineResizeTimer = null;
+    window.addEventListener("resize", function () {
+      clearTimeout(oneLineResizeTimer);
+      oneLineResizeTimer = setTimeout(function () {
+        const box = $("score-after");
+        if (box && box.classList.contains("oneline")) {
+          measureBands();
+          if (playbackStarted) cursorFollow(); else oneLineInitialView();
+        }
+      }, 800);
+    });
+
+        function cursorHide() {
       try {
         if (osmdAfter && osmdAfter.cursor) osmdAfter.cursor.hide();
       } catch (e) { /* OSMD cursor is best-effort */ }
@@ -512,7 +862,7 @@
       if (name === "Note on" && event.velocity > 0) {
         if (event.tick !== lastCursorTick) {
           lastCursorTick = event.tick;
-          cursorNext();
+          cursorNext(event.tick);
         }
         playNote(event.noteNumber);
       } else if (name === "Note off" || (name === "Note on" && event.velocity === 0)) {
@@ -588,6 +938,7 @@
       try {
         midiPlayer.play();
         playing = true;
+        startCursorTimer();
       } catch (e) {
         setStatus("Không phát được MIDI: " + e.toString());
         playing = false;
@@ -662,6 +1013,8 @@
 
       try {
         await renderAfter(data.xml);
+        buildCursorMap(data.xml);
+        applyOneLine();
       } catch (e) {
         setStatus("Không render được bản sạch: " + e.toString());
         return;
@@ -682,6 +1035,39 @@
       setStatus("Xong. Bấm Play để nghe và xem cursor.");
       updatePlayButton();
     }
+
+    /* patch: space toggles play/pause */
+    function isTextEntry(el) {
+      if (!el) return false;
+      const tag = el.tagName;
+      if (tag === "TEXTAREA" || tag === "SELECT") return true;
+      if (el.isContentEditable) return true;
+      if (tag === "INPUT") {
+        const t = (el.type || "text").toLowerCase();
+        return ["button", "checkbox", "radio", "file", "submit", "reset", "range"].indexOf(t) < 0;
+      }
+      return false;
+    }
+
+    function isSpace(e) {
+      return e.code === "Space" || e.key === " " || e.key === "Spacebar";
+    }
+
+    document.addEventListener("keydown", function (e) {
+      if (!isSpace(e) || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (isTextEntry(e.target)) return;
+      e.preventDefault();               // không cuộn trang, không "bấm" nút đang focus
+      if (e.repeat) return;
+      const btn = $("playPause");
+      if (btn && !btn.disabled) btn.click();
+    });
+
+    // Firefox kích hoạt nút khi nhả Space: chặn luôn ở keyup
+    document.addEventListener("keyup", function (e) {
+      if (!isSpace(e) || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (isTextEntry(e.target)) return;
+      e.preventDefault();
+    });
 
     $("apply").addEventListener("click", applyNormalize);
 
