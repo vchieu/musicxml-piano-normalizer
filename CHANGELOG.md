@@ -8,6 +8,8 @@ Tài liệu này ghi lại các thay đổi quan trọng của project.
 
 ### Added
 
+- Lyrics của MusicXML được giữ khi normalize (đường MusicXML -> MusicXML, `xml_regrid_piano.py` và web UI): `Note.lyric`, `note_lyrics()`, ghi `<lyric>` ở nốt đầu của mỗi hợp âm (không ghi ở phần nối tie).
+- Web UI: `POST /preview` trả bản gốc của MusicXML (xml + MIDI nghe thử). Chọn file MusicXML là bản gốc hiện ngay trên khuông chính (nghe thử, click để tua); bấm Normalize thì thay bằng bản sạch. Bỏ khung bản gốc cạnh bên.
 - MIDI: `--fine` (cho phép nửa ô lưới), `--min-dur SEC` (bỏ nốt rác), `--lh-max N` / `--rh-max N`
   (giới hạn số nốt mỗi hợp âm; tay trái giữ bass, tay phải giữ giai điệu), `--drop-ornaments` (bỏ nốt láy),
   `--simplify` (preset `--lh-max 3 --rh-max 1 --drop-ornaments`). Giá trị `--lh-max`/`--rh-max` ghi rõ

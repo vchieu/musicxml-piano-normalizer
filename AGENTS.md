@@ -308,6 +308,7 @@ tempo marking. `--min-dur` của script này tính bằng phách đen.
 ### `app.py` (web UI)
 
 - `GET /`: trả `static/index.html` (đường dẫn tính từ `Path(__file__).resolve().parent`).
+- `POST /preview`: chỉ MusicXML. Trả `xml` (bản gốc, bỏ namespace, để OSMD vẽ), `midi` (base64, một track, một tempo: nốt từ `xml_regrid.extract_notes_from_musicxml`, thời gian theo phách đen), `bpm`. UI gọi khi chọn file để hiện bản gốc trên khuông chính; `POST /normalize` thay nó bằng bản sạch.
 - `POST /normalize`: form `file`, `beats`, `split`, `hand`, `split_chords`, `downbeat`, `max_bpm`, `fine`,
   `min_dur`, `lh_max`, `rh_max`, `drop_ornaments`, `simplify`. MIDI -> `load_midi_input`; XML ->
   `xml_regrid.extract_notes_from_musicxml` + `read_score_meta` + `max_bpm=90`, `min_dur=0` (đơn vị phách đen).
@@ -785,7 +786,7 @@ Mọi heuristic mới phải có test với file mẫu.
 - Mặc định không ghi nốt ngắn hơn 16th khi ô lưới là 16th hoặc ngắn hơn; 32nd vụn bị gộp/lên ô. `--fine`
   giữ lại (hành vi cũ). Khi ô lưới là 8th hoặc dài hơn, nửa ô (16th) vẫn được giữ.
 - `--simplify` / `--rh-max` giữ nốt cao nhất làm giai điệu; nốt giữa hợp âm có thể mất.
-- Tie input bỏ mặc định; `--keep-ties` chỉ giữ cặp nguyên vẹn. Beam, dynamics, pedal (MusicXML), lyrics bị bỏ.
+- Tie input bỏ mặc định; `--keep-ties` chỉ giữ cặp nguyên vẹn. Beam, dynamics, pedal (MusicXML) bị bỏ. Lyrics được giữ qua `Note.lyric` / `note_lyrics()` (ghi ở nốt đầu mỗi hợp âm, mất nếu nốt đó bị bỏ).
 - Tuplet: độ dài không chia đúng thì ghi nốt gần nhất (MusicXML); engine MIDI chia lưới đều, không nhận tuplet.
 - Phân tay MusicXML `auto` đưa note trầm ở staff tay phải sang tay trái; staff chéo (cross-staff) không được nhận ra.
 - `split_hands` cho MIDI 1 track chỉ dựa vào vị trí/pitch; hai tay đan nhau có thể sai.

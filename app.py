@@ -10,7 +10,9 @@ Chạy:
 
 import base64
 import os
+import struct
 import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Optional
 
@@ -230,6 +232,60 @@ async def normalize(
         max_bpm=max_bpm, fine=fine, min_dur=min_dur, lh_max=lh_max, rh_max=rh_max,
         drop_ornaments=drop_ornaments, simplify=simplify,
     )
+
+
+def _preview_midi(notes, bpm):
+    """MIDI một track của các nốt gốc (thời gian tính bằng phách đen) để nghe thử trước khi normalize."""
+    tempo = max(1, min(0xFFFFFF, int(round(60_000_000 / bpm))))
+    ev = [(0, 1, N._meta(0x51, tempo.to_bytes(3, "big"))), (0, 1, bytes([0xC0, 0]))]
+    for n in notes:
+        a = max(0, int(round(n.start * N.PPQ)))
+        b = max(a + 1, int(round(n.end * N.PPQ)))
+        ev.append((b, 0, bytes([0x80, n.pitch, 0])))
+        ev.append((a, 2, bytes([0x90, n.pitch, max(1, min(127, int(n.velocity)))])))
+    return b"MThd" + struct.pack(">IHHH", 6, 0, 1, N.PPQ) + N._track(ev)
+
+
+def _preview_sync(data: bytes, filename: str):
+    suffix = os.path.splitext(filename)[1].lower()
+    if suffix not in N._XML_IN_EXT:
+        raise HTTPException(400, "Chỉ xem trước được file MusicXML (.xml/.musicxml/.mxl); "
+                                 "MIDI không có bản nhạc để vẽ")
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, "input" + suffix)
+        with open(src, "wb") as fh:
+            fh.write(data)
+        try:
+            root = N.load_musicxml_root(src)
+            if root.tag != "score-partwise":
+                raise ValueError("chỉ hỗ trợ score-partwise, nhưng root là <%s>" % root.tag)
+            notes = X.extract_notes_from_musicxml(src, N.MIDDLE_C)
+            _fifths, bpm = X.read_score_meta(src)
+        except Exception as e:
+            raise HTTPException(400, f"Không đọc được MusicXML: {e}")
+    if not notes:
+        raise HTTPException(400, "Không tìm thấy nốt nào trong MusicXML")
+    bpm = bpm if bpm and bpm > 0 else 120.0
+    xml_text = '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding="unicode")
+    try:
+        midi = _preview_midi(notes, bpm)
+    except Exception as e:
+        raise HTTPException(500, f"Không dựng được MIDI nghe thử: {e}")
+    return {
+        "xml": xml_text,
+        "midi": base64.b64encode(midi).decode("ascii"),
+        "bpm": bpm,
+        "input_kind": "xml",
+    }
+
+
+@app.post("/preview")
+async def preview(file: UploadFile = File(...)):
+    """Bản gốc của MusicXML (chưa normalize): xml để vẽ + midi để nghe thử (một tempo cho cả bài)."""
+    data = await file.read()
+    if len(data) > MAX_UPLOAD:
+        raise HTTPException(413, "File quá lớn (tối đa %d MB)" % (MAX_UPLOAD // (1024 * 1024)))
+    return await run_in_threadpool(_preview_sync, data, file.filename or "input.xml")
 
 
 if __name__ == "__main__":

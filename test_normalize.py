@@ -721,3 +721,68 @@ def test_write_musicxml_rejects_overlapping_voices(tmp_path):
     clean = N.normalize(notes, voices="keep")                # giữ nốt ngân: các nốt tay trái chồng nhau
     with pytest.raises(ValueError):
         N.write_musicxml(str(tmp_path / "x.xml"), clean)
+
+
+# --------------------------------------------------------------------------- #
+# Lyrics + preview
+# --------------------------------------------------------------------------- #
+
+def _lyric_xml(bars=8):
+    out = ["<?xml version='1.0'?><score-partwise version='3.1'><part-list><score-part id='P1'>"
+           "<part-name>x</part-name></score-part></part-list><part id='P1'>"]
+    k = 0
+    for b in range(bars):
+        out.append("<measure number='%d'>" % (b + 1))
+        if b == 0:
+            out.append("<attributes><divisions>1</divisions><time><beats>4</beats>"
+                       "<beat-type>4</beat-type></time></attributes>")
+        for i in range(4):
+            out.append("<note><pitch><step>%s</step><octave>5</octave></pitch><duration>1</duration>"
+                       "<voice>1</voice><lyric number='1'><syllabic>single</syllabic><text>w%d</text></lyric></note>"
+                       % ("CDEFGAB"[(b + i) % 7], k))
+            k += 1
+        out.append("</measure>")
+    out.append("</part></score-partwise>")
+    return "".join(out)
+
+
+def _lyrics_of(path):
+    root = ET.parse(path).getroot()
+    return [(ly.get("number"), ly.findtext("syllabic"), ly.findtext("text")) for ly in root.iter("lyric")]
+
+
+def test_lyrics_survive_musicxml_to_musicxml(tmp_path):
+    src = tmp_path / "ly.xml"
+    src.write_text(_lyric_xml(), encoding="utf-8")
+    dst = str(tmp_path / "out.xml")
+    assert N.main([str(src), dst]) == 0
+    assert _lyrics_of(dst) == [("1", "single", "w%d" % k) for k in range(32)]
+
+
+def test_lyrics_survive_the_regrid_path(tmp_path):
+    import xml_regrid_piano as X
+    src = tmp_path / "ly.xml"
+    src.write_text(_lyric_xml(), encoding="utf-8")
+    dst = str(tmp_path / "out.xml")
+    X.main([str(src), dst])
+    assert _lyrics_of(dst) == [("1", "single", "w%d" % k) for k in range(32)]
+
+
+def test_app_preview_endpoint():
+    pytest.importorskip("fastapi")
+    import app as A
+    import xml_regrid_piano as X
+    from fastapi import HTTPException
+
+    data = asyncio.run(A.preview(file=_FakeUpload(_MESSY)))
+    assert ET.fromstring(data["xml"]).tag == "score-partwise"
+    assert data["bpm"] > 0
+    raw = base64.b64decode(data["midi"])
+    assert raw[:4] == b"MThd"
+    header, chunks = N._chunks(raw)
+    ev = [e for t, b in chunks if t == b"MTrk" for e in N._events(b)]
+    ons = [p for _, k, p in ev if k == "midi" and p[0] & 0xF0 == 0x90 and p[2] > 0]
+    assert len(ons) == len(X.extract_notes_from_musicxml(_MESSY, 60))
+
+    with pytest.raises(HTTPException):                       # MIDI không có bản nhạc để vẽ
+        asyncio.run(A.preview(file=_FakeUpload(_MIDI_SAMPLE)))

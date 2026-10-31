@@ -286,7 +286,7 @@ Trang làm được:
 
 - upload `.mid`/`.midi`/`.xml`/`.musicxml`/`.mxl`, chỉnh các flag thật của CLI (beats, split, hand,
   downbeat, max bpm, `--fine`, `--min-dur`, `--lh-max`, `--rh-max`, `--drop-ornaments`, `--simplify`)
-- render bản sạch bằng OpenSheetMusicDisplay; nếu input là MusicXML thì hiện thêm bản gốc cạnh bên
+- chọn file MusicXML là bản gốc hiện ngay trên khuông nhạc (OpenSheetMusicDisplay), nghe thử được; bấm Normalize thì khuông đó được thay bằng bản sạch. MIDI không có bản nhạc để vẽ nên chỉ hiện sau khi Normalize
 - Play/Pause/Stop bằng Web Audio + soundfont (`acoustic_grand_piano`), cursor chạy theo MIDI
 - tải `clean.xml` / `clean.mid`, copy câu lệnh CLI đúng với loại input
 - xem report/stats và tempo/key tìm được
@@ -336,7 +336,7 @@ Có thể mất hoặc đổi:
 
 - độ ngân của nốt dài bị cắt khi note kế tiếp của cùng tay bắt đầu
 - tie/beam của input (xem mục 7), tuplet (độ dài tuplet không chia đúng được sẽ ghi gần đúng)
-- dynamics, pedal, text, lyrics, articulations, directions phức tạp, đổi khóa giữa bài (output luôn Sol/Fa)
+- dynamics, pedal, text, articulations, directions phức tạp, đổi khóa giữa bài (output luôn Sol/Fa). Lyrics thì được giữ ở nốt đầu của mỗi hợp âm (mất nếu nốt đó bị bỏ bởi `--simplify`/`--rh-max`/`--drop-ornaments`)
 - tempo thứ hai trở đi
 - MIDI: tuplet không được nhận ra (lưới chia đều), cần numpy
 - MIDI: mặc định không ghi nốt ngắn hơn 16th (32nd vụn bị gộp/lên ô); dùng `--fine` để giữ

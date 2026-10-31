@@ -71,6 +71,7 @@ class Note:
     velocity: int = 90
     track: int = 0
     hand: Optional[str] = None
+    lyric: Optional[tuple] = None    # ((number, syllabic, text), ...) từ MusicXML; ghi lại thành <lyric>
 
 
 
@@ -1627,8 +1628,37 @@ def make_grace_note(g, chord=False):
     return note
 
 
+def note_lyrics(note):
+    """((number, syllabic, text), ...) của các <lyric> trong một <note> MusicXML; bỏ lyric không có chữ."""
+    out = []
+    for ly in note.findall("lyric"):
+        text = "".join(t.text or "" for t in ly.findall("text")).strip()
+        if text:
+            out.append((ly.get("number") or ly.get("name") or "1", ly.findtext("syllabic"), text))
+    return tuple(out)
+
+
+def _entry_lyrics(entry, idx, orig_note, piece_i, tie_prev, seen):
+    """
+    Lyric cho nốt thứ `idx` của một hợp âm khi ghi: chỉ ở mảnh đầu và không phải nốt nối từ ô nhịp trước;
+    mỗi số lời (number) chỉ một lần trong hợp âm. Đường MusicXML lấy từ nốt gốc, đường MIDI/regrid từ entry.
+    """
+    if piece_i != 0 or tie_prev:
+        return None
+    if orig_note is not None:
+        lyr = note_lyrics(orig_note)
+    else:
+        lyr = entry.get("lyrics") if idx == 0 else ()
+    out = []
+    for ly in (lyr or ()):
+        if ly[0] not in seen:
+            seen.add(ly[0])
+            out.append(ly)
+    return out
+
+
 def make_note_from_orig(orig_note, duration, divisions, chord=False, midi=None,
-                        tie_stop=False, tie_start=False, show_accidental=True, acc_state=None):
+                        tie_stop=False, tie_start=False, show_accidental=True, acc_state=None, lyrics=None):
     """
     Một <note> voice 1. `orig_note` (đường MusicXML) cho pitch/accidental gốc; nếu None thì dựng pitch
     từ `midi` (đường MIDI). Thứ tự phần tử theo MusicXML: chord, pitch, duration, tie, voice, type,
@@ -1700,6 +1730,13 @@ def make_note_from_orig(orig_note, duration, divisions, chord=False, midi=None,
         if tie_start:
             ET.SubElement(notations, "tied").set("type", "start")
 
+    for number, syllabic, text in (lyrics or ()):        # <lyric> đứng sau <notations>
+        ly = ET.SubElement(note, "lyric")
+        ly.set("number", str(number))
+        if syllabic:
+            ET.SubElement(ly, "syllabic").text = syllabic
+        ET.SubElement(ly, "text").text = text
+
     return note
 
 
@@ -1734,6 +1771,7 @@ def append_sequence_to_measure(measure_elem, seq, divisions, measure_duration, f
         elif entry["type"] == "notes":
             tie_prev = bool(entry.get("tie_prev"))
             tie_next = bool(entry.get("tie_next"))
+            seen_ln = set()
 
             for gi, g in enumerate(entry.get("grace") or []):
                 measure_elem.append(make_grace_note(g, chord=(g.find("chord") is not None and gi > 0)))
@@ -1755,6 +1793,7 @@ def append_sequence_to_measure(measure_elem, seq, divisions, measure_duration, f
                             tie_start=(i < len(pieces) - 1 or tie_next or "start" in kinds),
                             show_accidental=(i == 0 and not tie_prev),
                             acc_state=acc_state,
+                            lyrics=_entry_lyrics(entry, idx, orig_note, i, tie_prev, seen_ln),
                         )
                     )
 
@@ -1958,9 +1997,13 @@ def clean_to_sequences(clean: Clean, hand: str):
     nbars = max(1, len(clean.bar_times) - 1)
 
     by_u = {}
+    lyr_at = {}                                  # unit -> lyric của các nốt bắt đầu ở đó
     for n in clean.notes:
         if n.hand == hand:
-            by_u.setdefault(int(round(n.start / unit)), []).append((n.pitch, int(round(n.end / unit))))
+            u_n = int(round(n.start / unit))
+            by_u.setdefault(u_n, []).append((n.pitch, int(round(n.end / unit))))
+            for ly in (getattr(n, "lyric", None) or ()):
+                lyr_at.setdefault(u_n, []).append(ly)
 
     segs, cur = [], 0
     for s0 in sorted(by_u):
@@ -1991,6 +2034,7 @@ def clean_to_sequences(clean: Clean, hand: str):
             else:
                 measures[m].append({"type": "notes", "duration": end - a,
                                     "items": [(p, None) for p in pitches],
+                                    "lyrics": lyr_at.get(a0) if a == a0 else None,
                                     "tie_prev": a > a0, "tie_next": end < b})
             a = end
     return measures

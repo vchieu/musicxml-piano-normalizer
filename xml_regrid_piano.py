@@ -193,7 +193,8 @@ def extract_notes_from_musicxml(path, split_midi, hand="auto", split_chords=Fals
                     del open_ties[key]
                 continue
 
-            note = N.Note(pitch=midi, start=start_q, end=end_q, velocity=90, track=0, hand=h)
+            note = N.Note(pitch=midi, start=start_q, end=end_q, velocity=90, track=0, hand=h,
+                          lyric=N.note_lyrics(orig) or None)
             notes.append(note)
             if "start" in kinds:
                 open_ties[key] = note

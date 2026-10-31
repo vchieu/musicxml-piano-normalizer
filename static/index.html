@@ -46,6 +46,27 @@
       color: #666;
     }
 
+    #help {
+      border: 1px solid #ddd;
+      background: #fafcff;
+      padding: 8px 12px;
+      margin: 10px 0;
+      font-size: 13px;
+    }
+
+    #help summary {
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    #help li {
+      margin: 6px 0;
+    }
+
+    .controls label[title] {
+      cursor: help;
+    }
+
     input[type="number"],
     input[type="text"],
     select {
@@ -136,8 +157,27 @@
     <input type="file" id="file" accept=".mid,.midi,.xml,.musicxml,.mxl" />
   </div>
 
+  <details id="help">
+    <summary>Nên chỉnh option nào? (bấm để xem)</summary>
+    <p>Cứ để mặc định và bấm <b>Normalize</b> trước, xem bản sạch và report rồi mới chỉnh.
+       Rê chuột vào từng option để xem giải thích chi tiết.</p>
+    <ul>
+      <li><b>Vạch nhịp lệch, nốt mạnh không nằm đầu ô nhịp</b> → thử <i>Downbeat = first</i>,
+          hoặc đổi <i>Số phách / ô nhịp</i> (ví dụ 3 cho nhịp 3/4).</li>
+      <li><b>Tay phải / tay trái bị gán sai</b> → MusicXML: đổi <i>Phân tay</i> (chọn <i>staff</i> nếu bản gốc
+          đã chia tay đúng) hoặc chỉnh <i>Split tay</i>. MIDI 1 track: chỉnh <i>Split tay</i>.</li>
+      <li><b>Bản sạch quá dày, khó đọc hoặc khó chơi</b> → bật <i>simplify</i>; hoặc chỉnh riêng
+          <i>LH / RH tối đa nốt</i>, bật <i>drop-ornaments</i>, và với MIDI thử <i>Min duration</i> = 0.05.</li>
+      <li><b>Tempo hoặc độ dài nốt ra gấp đôi / một nửa so với bài thật</b> (MIDI) → chỉnh <i>Max BPM</i>
+          (hạ xuống để tempo ra thấp hơn, nâng lên để cao hơn).</li>
+      <li><b>Mất nốt láy / nốt nhanh mà bạn muốn giữ</b> → bật <i>--fine</i> (đổi lại có thể có nốt 32nd vụn).</li>
+      <li><b>MIDI chơi tay có nhiều nốt rác rất ngắn</b> → <i>Min duration</i>.</li>
+    </ul>
+    <p>Option ghi "MusicXML" hoặc "chỉ MIDI" chỉ có tác dụng với loại file đó.</p>
+  </details>
+
   <div class="controls">
-    <label>
+    <label title="Số phách đen mỗi ô nhịp: 4 = nhịp 4/4, 3 = 3/4 (valse), 2 = 2/4, 6 = 6/4 (không phải 6/8). Chỉ đổi khi vạch nhịp ra sai. Với MusicXML có số chỉ nhịp x/4, để 4 thì tool dùng nhịp của file.">
       Số phách / ô nhịp
       <select id="beats">
         <option value="2">2</option>
@@ -147,12 +187,12 @@
       </select>
     </label>
 
-    <label>
+    <label title="Ngưỡng tách tay, viết bằng tên nốt (mặc định C4). MusicXML: hợp âm có nốt thấp nhất thấp hơn ngưỡng thì sang tay trái. MIDI 1 track: chỉ là điểm xuất phát của bộ tự dò vị trí hai tay. MIDI có từ 2 track trở lên thì không dùng.">
       Split tay (note name)
       <input type="text" id="split" value="C4" />
     </label>
 
-    <label>
+    <label title="Cách chia tay cho MusicXML. auto: nốt thấp hơn Split thì tay trái, còn lại theo staff gốc. staff: đúng theo staff gốc (staff 1 là tay phải, staff 2 là tay trái). pitch: chỉ theo cao độ so với Split.">
       Phân tay (MusicXML)
       <select id="hand">
         <option value="auto" selected>auto</option>
@@ -161,12 +201,12 @@
       </select>
     </label>
 
-    <label class="check">
+    <label class="check" title="Chỉ MusicXML, với phân tay auto/pitch. Tách từng nốt của một hợp âm theo Split: nốt thấp sang tay trái, nốt cao sang tay phải. Hữu ích khi bản gốc ghi bass và giai điệu chung một hợp âm.">
       <input type="checkbox" id="split_chords" />
       Tách từng nốt của hợp âm (MusicXML)
     </label>
 
-    <label>
+    <label title="Cách xác định phách 1 của ô nhịp. auto: đoán từ vị trí các nốt (bass hay rơi vào phách 1), chấp nhận nốt lấy đà. first: ép nốt đầu tiên của bài là phách 1; dùng khi bài vào thẳng phách 1 mà auto đoán lệch vạch nhịp.">
       Downbeat
       <select id="downbeat">
         <option value="auto" selected>auto</option>
@@ -174,41 +214,41 @@
       </select>
     </label>
 
-    <label>
+    <label title="Chỉ MIDI. Tempo (nốt đen) tìm được luôn không vượt giá trị này. Nếu tempo hoặc độ dài nốt ra gấp đôi / một nửa so với bài thật thì thử đổi: hạ xuống để tempo ra thấp hơn, nâng lên để cao hơn. MusicXML: engine luôn dùng 90.">
       Max BPM
       <input type="number" id="max_bpm" value="130" step="1" min="1" />
       <span class="hint">MusicXML: engine luôn dùng 90</span>
     </label>
 
-    <label>
+    <label title="Tay trái tối đa N nốt mỗi hợp âm, giữ nốt bass (thấp nhất) trước. 0 = không giới hạn (nếu bật simplify thì mặc định là 3). Dùng để bớt dày tay trái.">
       LH tối đa nốt / hợp âm
       <input type="number" id="lh_max" value="0" step="1" min="0" />
       <span class="hint">0 = không giới hạn (trừ khi bật simplify)</span>
     </label>
 
-    <label>
+    <label title="Tay phải tối đa N nốt mỗi hợp âm, giữ nốt cao nhất (giai điệu) trước. 1 = chỉ còn giai điệu, mất hợp âm tay phải. 0 = không giới hạn (nếu bật simplify thì mặc định là 1).">
       RH tối đa nốt / hợp âm
       <input type="number" id="rh_max" value="0" step="1" min="0" />
       <span class="hint">0 = không giới hạn (trừ khi bật simplify)</span>
     </label>
 
-    <label>
+    <label title="Chỉ MIDI. Bỏ nốt ngắn hơn số giây này trước khi chuẩn hóa, để loại nốt rác (thường do bộ chuyển audio sang MIDI). Thử 0.05. 0 = giữ hết. Nếu bỏ xong còn dưới 8 nốt thì giữ nguyên.">
       Min duration (giây, chỉ MIDI)
       <input type="number" id="min_dur" value="0" step="0.01" min="0" />
       <span class="hint">0 = không lọc nốt ngắn</span>
     </label>
 
-    <label class="check">
+    <label class="check" title="Mặc định tool không ghi nốt ngắn hơn móc kép (16th) cho bản nhạc gọn và đỡ bị tách voice. Bật để giữ cả nốt 32nd / nốt láy nhanh; đổi lại bản sạch có thể vụn hơn.">
       <input type="checkbox" id="fine" />
       --fine (cho phép nửa ô lưới)
     </label>
 
-    <label class="check">
+    <label class="check" title="Bỏ nốt láy: nốt rất ngắn nằm cách một nốt dài (cùng phách, hoặc hợp âm dài kề bên) 1-2 bán cung. Nốt lặp lại cùng phím thì không bị bỏ.">
       <input type="checkbox" id="drop_ornaments" />
       --drop-ornaments (bỏ nốt láy)
     </label>
 
-    <label class="check">
+    <label class="check" title="Bản đơn giản: tay trái tối đa 3 nốt mỗi hợp âm, tay phải chỉ giữ giai điệu (1 nốt), và bỏ nốt láy. Nếu bạn điền LH / RH tối đa nốt ở trên (lớn hơn 0) thì giá trị đó thắng preset.">
       <input type="checkbox" id="simplify" />
       --simplify (LH 3 / RH 1, bỏ láy)
     </label>
@@ -238,7 +278,7 @@
     </section>
 
     <section class="pane">
-      <h2>Bản sạch</h2>
+      <h2 id="score-title">Bản sạch</h2>
       <div id="score-after"></div>
     </section>
   </div>
@@ -333,7 +373,7 @@
       const isXml = kind === "xml";
       $("hand").disabled = !isXml;
       $("split_chords").disabled = !isXml;
-      $("pane-before").hidden = !isXml;
+      $("pane-before").hidden = true;   // bản gốc hiện ngay trên khuông chính
       buildCommand();
     }
 
@@ -351,6 +391,7 @@
       $("downloadMidi").disabled = true;
       setStatus("");
       syncKindUi();
+      previewOriginal();
     });
 
     $("copyCommand").addEventListener("click", async function () {
@@ -418,17 +459,200 @@
       }
     }
 
+    // Đọc file thành chuỗi cho OSMD: .mxl (zip) đọc dạng nhị phân, .xml/.musicxml đọc dạng văn bản.
+    function readFileForOsmd(file) {
+      return new Promise(function (resolve, reject) {
+        const fr = new FileReader();
+        fr.onload = function () { resolve(fr.result); };
+        fr.onerror = function () { reject(fr.error || new Error("không đọc được file")); };
+        if (extOf(file.name) === ".mxl") fr.readAsBinaryString(file);
+        else fr.readAsText(file);
+      });
+    }
+
     async function renderBefore(file) {
-      const url = URL.createObjectURL(file);
+      if (!osmdBefore) {
+        const OSMD = osmdClass();
+        osmdBefore = new OSMD("score-before");
+      }
+      await osmdBefore.load(await readFileForOsmd(file));
+      osmdBefore.render();
+    }
+
+    // Vừa chọn file: MusicXML thì hiện bản gốc ngay trên khuông chính (nghe thử, click để tua được);
+    // bấm Normalize sẽ thay bằng bản sạch. MIDI không có bản nhạc để vẽ.
+    let previewToken = 0;
+
+    function clearScore() {
+      cursorTicks = [];
+      cursorIdx = 0;
+      stepPos = null;
+      $("score-title").textContent = "Bản nhạc";
+      try { if (osmdAfter) osmdAfter.clear(); } catch (e) { /* ignore */ }
+      const box = $("score-after");
+      box.classList.remove("oneline");
+      box.style.height = "";
+    }
+
+    /* patch: MIDI nghe thử dựng từ các bước cursor của OSMD (cursor và âm thanh cùng một nguồn) */
+    function vlqBytes(n) {
+      const out = [n & 0x7f];
+      n >>= 7;
+      while (n > 0) { out.push(0x80 | (n & 0x7f)); n >>= 7; }
+      return out.reverse();
+    }
+
+    // events: [tick, thứ tự, [byte...]] (thứ tự: 1 = note off, 2 = note on) -> Uint8Array một file MIDI format 0
+    function buildMidiBytes(events, bpm) {
+      const tempo = Math.max(1, Math.min(0xFFFFFF, Math.round(60000000 / (bpm > 0 ? bpm : 120))));
+      const all = events.concat([
+        [0, 0, [0xFF, 0x51, 0x03, (tempo >> 16) & 255, (tempo >> 8) & 255, tempo & 255]],
+        [0, 0, [0xC0, 0x00]]
+      ]);
+      all.sort(function (a, b) { return a[0] - b[0] || a[1] - b[1]; });
+      const body = [];
+      let last = 0;
+      for (let i = 0; i < all.length; i++) {
+        const e = all[i];
+        const d = vlqBytes(e[0] - last);
+        for (let k = 0; k < d.length; k++) body.push(d[k]);
+        for (let k = 0; k < e[2].length; k++) body.push(e[2][k]);
+        last = e[0];
+      }
+      body.push(0x00, 0xFF, 0x2F, 0x00);
+      const n = body.length;
+      const head = [0x4D, 0x54, 0x68, 0x64, 0, 0, 0, 6, 0, 0, 0, 1,
+                    (TICKS_PER_QUARTER >> 8) & 255, TICKS_PER_QUARTER & 255,
+                    0x4D, 0x54, 0x72, 0x6B, (n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
+      const out = new Uint8Array(head.length + n);
+      out.set(head, 0);
+      out.set(body, head.length);
+      return out;
+    }
+
+    function bytesToBase64(u8) {
+      let s = "";
+      for (let i = 0; i < u8.length; i += 0x8000) {
+        s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+      }
+      return btoa(s);
+    }
+
+    // Các nốt bắt đầu ở bước cursor hiện tại (mọi khuông).
+    function osmdNotesAt(c, it) {
       try {
-        if (!osmdBefore) {
-          const OSMD = osmdClass();
-          osmdBefore = new OSMD("score-before");
+        if (typeof c.NotesUnderCursor === "function") return c.NotesUnderCursor() || [];
+      } catch (e) { /* thử cách khác */ }
+      const out = [];
+      try {
+        const ves = it.CurrentVoiceEntries || [];
+        for (let i = 0; i < ves.length; i++) {
+          const ns = ves[i].Notes || [];
+          for (let k = 0; k < ns.length; k++) out.push(ns[k]);
         }
-        await osmdBefore.load(url);
-        osmdBefore.render();
-      } finally {
-        URL.revokeObjectURL(url);
+      } catch (e) { /* ignore */ }
+      return out;
+    }
+
+    // Đi hết các bước cursor, dựng MIDI từ chính các nốt ở từng bước. Trả {ticks, midi (base64)} hoặc null.
+    function buildPreviewFromOsmd(bpm) {
+      const c = osmdAfter && osmdAfter.cursor;
+      if (!c) return null;
+      const events = [];
+      const ticks = [];
+      let ok = true;
+      let nNotes = 0;
+      try {
+        c.hide();                          // hide: reset()/next() không vẽ lại, không cuộn trang
+        c.reset();
+        const it = osmdIterator(c);
+        const adv = (it && typeof it.moveToNext === "function")
+          ? function () { it.moveToNext(); }
+          : function () { c.next(); };
+        let guard = 0;
+        let prev = -1;
+        while (it && !it.EndReached && guard++ < 200000) {
+          const t = stepTick(it);
+          if (t === null || t <= prev) { ok = false; break; }   // thiếu timestamp, hoặc đi ngược (repeat)
+          prev = t;
+          ticks.push(t);
+          const notes = osmdNotesAt(c, it);
+          for (let k = 0; k < notes.length; k++) {
+            const n = notes[k];
+            if (!n || (typeof n.isRest === "function" && n.isRest())) continue;
+            const tie = n.NoteTie;
+            if (tie && tie.StartNote && tie.StartNote !== n) continue;   // phần nối: đã tính ở nốt đầu
+            if (typeof n.halfTone !== "number" || !n.Length) continue;
+            let len = n.Length.RealValue;
+            if (tie && tie.Notes && tie.Notes.length) {
+              len = 0;
+              for (let j = 0; j < tie.Notes.length; j++) len += tie.Notes[j].Length.RealValue;
+            }
+            const pitch = n.halfTone + 12;
+            if (pitch < 0 || pitch > 127) continue;
+            const dur = Math.max(1, Math.round(len * 4 * TICKS_PER_QUARTER));
+            events.push([t, 2, [0x90, pitch, 80]]);
+            events.push([t + dur, 1, [0x80, pitch, 0]]);
+            nNotes++;
+          }
+          adv();
+        }
+      } catch (e) {
+        ok = false;
+        console.warn("buildPreviewFromOsmd lỗi:", e);
+      }
+      try { c.reset(); c.hide(); } catch (e) { /* ignore */ }
+      if (!ok || !ticks.length || !nNotes) {
+        console.warn("buildPreviewFromOsmd: không dựng được (ok=" + ok + ", bước=" + ticks.length +
+                     ", nốt=" + nNotes + "), dùng MIDI từ server");
+        return null;
+      }
+      console.info("MIDI nghe thử dựng từ OSMD: " + ticks.length + " bước cursor, " + nNotes + " nốt");
+      return { ticks: ticks, midi: bytesToBase64(buildMidiBytes(events, bpm)) };
+    }
+
+    async function previewOriginal() {
+      const input = $("file");
+      const file = input.files.length ? input.files[0] : null;
+      const token = ++previewToken;
+      if (!file) { clearScore(); return; }
+      if (currentKind() !== "xml") {
+        clearScore();
+        setStatus("File MIDI không có bản nhạc để vẽ. Bấm Normalize để xem bản sạch.");
+        return;
+      }
+      setStatus("Đang đọc bản gốc...");
+      try {
+        const form = new FormData();
+        form.append("file", file);
+        const res = await fetch("/preview", { method: "POST", body: form });
+        const data = await res.json().catch(function () { return null; });
+        if (token !== previewToken) return;
+        if (!res.ok || !data || !data.xml) {
+          setStatus("Không đọc được bản gốc: " + ((data && data.detail) || ("HTTP " + res.status)));
+          return;
+        }
+        lastData = data;                     // có midi để phát thử; nút tải vẫn tắt cho tới khi Normalize
+        await renderAfter(data.xml);
+        if (token !== previewToken) return;
+        $("score-title").textContent = "Bản gốc (chưa normalize)";
+        const built = buildPreviewFromOsmd(data.bpm);
+        if (built) {
+          data.midi = built.midi;           // MIDI dựng từ chính các bước cursor: cursor luôn khớp nhạc
+          cursorTicks = built.ticks;
+          cursorIdx = 0;
+          stepPos = null;
+        } else {
+          buildCursorMap(data.xml);          // dự phòng: MIDI từ server + bảng tick theo XML
+        }
+        applyOneLine();
+        showCursorAtStart();
+        updatePlayButton();
+        setStatus("Đang hiện bản gốc: bấm Play để nghe, click vào bản nhạc để tua. " +
+                  "Bấm Normalize để thay bằng bản đã chuẩn hóa.");
+      } catch (e) {
+        if (token !== previewToken) return;
+        setStatus("Không vẽ được bản gốc: " + e.toString());
       }
     }
 
@@ -1072,6 +1296,7 @@
       const file = fileInput.files[0];
       const kind = currentKind();
 
+      previewToken++;
       stopPlayback();
       cursorHide();
       updatePlayButton();
@@ -1126,6 +1351,7 @@
 
       $("downloadXml").disabled = false;
       $("downloadMidi").disabled = false;
+      $("score-title").textContent = "Bản sạch";
 
       try {
         await renderAfter(data.xml);
@@ -1138,17 +1364,7 @@
         return;
       }
 
-      if (kind === "xml") {
-        $("pane-before").hidden = false;
-        try {
-          await renderBefore(file);
-        } catch (e) {
-          $("pane-before").hidden = true;
-          setStatus("Không render được bản gốc (.mxl có thể chưa hỗ trợ): " + e.toString());
-        }
-      } else {
-        $("pane-before").hidden = true;
-      }
+      $("pane-before").hidden = true;   // bản gốc đã hiện trên khuông chính trước khi Normalize
 
       setStatus("Xong. Bấm Play để nghe và xem cursor.");
       updatePlayButton();
