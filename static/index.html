@@ -118,6 +118,7 @@
     #score-after {
       min-height: 220px;
     }
+    #score-after { cursor: pointer; }
     /* patch: one-line view */
     #score-after.oneline {
       position: relative;
@@ -497,6 +498,7 @@
     }
 
     function buildCursorMap(xml) {
+      stepPos = null;
       cursorTicks = [];
       cursorIdx = 0;
       try {
@@ -536,6 +538,7 @@
 
     function cursorReset() {
       cursorIdx = 0;
+      pendingTick = 0;
       cursorFirstSkipped = false;
       try {
         if (osmdAfter && osmdAfter.cursor) {
@@ -567,6 +570,112 @@
         }
         if (cursorIdx !== from) cursorFollow();
       } catch (e) { /* OSMD cursor is best-effort */ }
+    }
+
+/* patch: click-to-seek */
+    const SEEK_AUTOPLAY = true;  // true: click khi đang dừng/tạm dừng cũng phát luôn; false: chỉ đặt vị trí, bấm Play mới phát
+    let pendingTick = 0;         // vị trí bắt đầu cho lần Play kế (khi đang dừng)
+    let stepPos = null;          // [{x, top, bottom}] của từng bước cursor, tọa độ nội dung của #score-after
+
+    // Đưa cursor OSMD tới bước idx (tiến hoặc lùi), không vẽ lại từng bước.
+    function moveCursorTo(idx) {
+      const c = osmdAfter && osmdAfter.cursor;
+      if (!c || !cursorTicks.length) return;
+      idx = Math.max(0, Math.min(idx, cursorTicks.length - 1));
+      c.hide();                                  // hide: next()/reset() không vẽ lại, không cuộn
+      if (idx < cursorIdx) { c.reset(); cursorIdx = 0; }
+      while (cursorIdx < idx) { c.next(); cursorIdx++; }
+      c.show();
+      cursorFollow();
+    }
+
+    // Đo vị trí từng bước cursor một lần (đi hết bài, rồi trả cursor về chỗ cũ).
+    function ensureStepPos() {
+      if (stepPos) return stepPos;
+      const c = osmdAfter && osmdAfter.cursor;
+      const box = $("score-after");
+      const n = cursorTicks.length;
+      if (!c || !box || !n) return null;
+      const prevIdx = cursorIdx;
+      const prevFollow = osmdAfter.FollowCursor;
+      const pos = [];
+      osmdAfter.FollowCursor = false;
+      try {
+        c.reset();
+        c.show();
+        for (let i = 0; i < n; i++) {
+          const el = cursorImg();
+          if (!el) break;
+          const r = el.getBoundingClientRect();
+          const b = box.getBoundingClientRect();
+          pos.push({
+            x: r.left + r.width / 2 - b.left + box.scrollLeft,
+            top: r.top - b.top + box.scrollTop,
+            bottom: r.bottom - b.top + box.scrollTop
+          });
+          if (i < n - 1) c.next();
+        }
+      } catch (e) { pos.length = 0; }
+      try { c.hide(); c.reset(); } catch (e) { /* best-effort */ }
+      cursorIdx = 0;
+      osmdAfter.FollowCursor = prevFollow;
+      moveCursorTo(prevIdx);
+      stepPos = pos.length === n ? pos : null;
+      return stepPos;
+    }
+
+    // Bước cursor gần điểm click nhất: trước hết đúng dòng nhạc (khoảng cách dọc), rồi gần nhất theo x.
+    function stepAt(x, y) {
+      const pos = ensureStepPos();
+      if (!pos) return -1;
+      let minDy = Infinity;
+      const dys = pos.map(function (p) {
+        const dy = y < p.top ? p.top - y : (y > p.bottom ? y - p.bottom : 0);
+        if (dy < minDy) minDy = dy;
+        return dy;
+      });
+      let best = -1, bestDx = Infinity;
+      for (let i = 0; i < pos.length; i++) {
+        if (dys[i] > minDy + 1) continue;
+        const dx = Math.abs(pos[i].x - x);
+        if (dx < bestDx) { bestDx = dx; best = i; }
+      }
+      return best;
+    }
+
+    function seekToStep(idx) {
+      moveCursorTo(idx);
+      const tick = cursorTicks[idx];
+      if (midiPlayer && playbackStarted) {           // đang chạy hoặc đang tạm dừng
+        const wasPlaying = playing;
+        stopAllNotes();
+        lastCursorTick = -1;
+        midiPlayer.skipToTick(tick);                 // skipToTick tự dừng player
+        if (wasPlaying) {
+          try { midiPlayer.play(); } catch (e) { /* ignore */ }
+        } else if (SEEK_AUTOPLAY) {
+          $("playPause").click();                    // tiếp tục từ vị trí mới
+        }
+      } else {                                       // đang dừng hẳn
+        pendingTick = tick;
+        if (SEEK_AUTOPLAY) $("playPause").click();
+      }
+    }
+
+    $("score-after").addEventListener("click", function (e) {
+      if (!lastData || !osmdAfter || !cursorTicks.length) return;
+      const box = $("score-after");
+      const b = box.getBoundingClientRect();
+      const idx = stepAt(e.clientX - b.left + box.scrollLeft, e.clientY - b.top + box.scrollTop);
+      if (idx >= 0) seekToStep(idx);
+    });
+
+    // Hiện cursor ở đầu bài mà không cuộn trang.
+    function showCursorAtStart() {
+      if (!osmdAfter) return;
+      const f = osmdAfter.FollowCursor;
+      osmdAfter.FollowCursor = false;
+      try { cursorReset(); } finally { osmdAfter.FollowCursor = f; }
     }
 
 /* patch: cursor follows playback tick */
@@ -670,6 +779,7 @@
     function oneLineInitialView() {
       const box = $("score-after");
       if (!box || !box.classList.contains("oneline") || playbackStarted) return;
+      if (cursorIdx > 0) { cursorFollow(); return; }   // đã click sang chỗ khác: đừng kéo về dòng đầu
       try {
         measureBands();
         const seed = firstStaffSeed();
@@ -767,7 +877,7 @@
         box.classList.remove("oneline");
         box.style.height = "";
       }
-      try { if (c && !keepShown) c.hide(); } catch (e) { /* ignore */ }
+      /* patch: giữ cursor luôn hiện */
     }
 
     if ($("oneLine")) $("oneLine").addEventListener("change", applyOneLine);
@@ -776,6 +886,7 @@
     let oneLineResizeTimer = null;
     window.addEventListener("resize", function () {
       clearTimeout(oneLineResizeTimer);
+      stepPos = null;
       oneLineResizeTimer = setTimeout(function () {
         const box = $("score-after");
         if (box && box.classList.contains("oneline")) {
@@ -887,7 +998,7 @@
         playbackStarted = false;
         midiPlayer = null;
         stopAllNotes();
-        cursorHide();
+        cursorReset();
         updatePlayButton();
         suspendAudio();
       });
@@ -909,7 +1020,7 @@
 
     $("stop").addEventListener("click", function () {
       stopPlayback();
-      cursorHide();
+      cursorReset();
       updatePlayButton();
     });
 
@@ -928,7 +1039,12 @@
       if (!playbackStarted) {
         playbackStarted = true;
         lastCursorTick = -1;
-        cursorReset();
+        if (pendingTick > 0) {
+          midiPlayer.skipToTick(pendingTick);   // cursor đã nằm sẵn ở chỗ click
+          pendingTick = 0;
+        } else {
+          cursorReset();
+        }
       }
 
       await ensureInstrument();
@@ -1015,6 +1131,8 @@
         await renderAfter(data.xml);
         buildCursorMap(data.xml);
         applyOneLine();
+        showCursorAtStart();
+        setTimeout(function () { if (!playing) ensureStepPos(); }, 500);   // đo sẵn vị trí để click đầu tiên không bị khựng
       } catch (e) {
         setStatus("Không render được bản sạch: " + e.toString());
         return;
