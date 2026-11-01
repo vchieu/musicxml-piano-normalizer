@@ -337,6 +337,7 @@ output                 (tùy chọn; mặc định <input>_clean.mid hoặc _cle
 --keep-beams           không còn tác dụng, chỉ nhận để không vỡ lệnh cũ (in cảnh báo)
 --drop-grace           (MusicXML)
 --no-fill-rests        (MusicXML) dùng <forward> thay rest
+--no-expand-repeats    (MusicXML) không chép đoạn lặp ra (mặc định chép: parse_repeat_info + expand_repeats; lyrics lần k lấy lời k qua lyric_passes/pass_lyrics)
 --channel1 --channel2 --program --volume1 --volume2 --no-brace --no-final-barline
 --reader {auto,loader,builtin}   (MIDI)
 --beats N                        (MIDI) số phách mỗi ô nhịp, mặc định 4

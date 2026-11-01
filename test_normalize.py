@@ -786,3 +786,86 @@ def test_app_preview_endpoint():
 
     with pytest.raises(HTTPException):                       # MIDI không có bản nhạc để vẽ
         asyncio.run(A.preview(file=_FakeUpload(_MIDI_SAMPLE)))
+
+
+# --------------------------------------------------------------------------- #
+# Chép đoạn lặp ra, lyrics theo lần lặp
+# --------------------------------------------------------------------------- #
+
+def _rep(**kw):
+    d = dict(fwd=False, bwd=False, times=2, end_start=None, end_stop=False, segno=None, coda=None,
+             dacapo=False, dalsegno=None, tocoda=None, fine=False)
+    d.update(kw)
+    return d
+
+
+def test_expand_repeats_orders():
+    assert N.expand_repeats([_rep(), _rep(), _rep()])[0] == [0, 1, 2]
+    assert N.expand_repeats([_rep(fwd=True), _rep(bwd=True), _rep()])[0] == [0, 1, 0, 1, 2]
+    assert N.expand_repeats([_rep(), _rep(bwd=True), _rep()])[0] == [0, 1, 0, 1, 2]
+    volta = [_rep(), _rep(fwd=True), _rep(end_start=[1], bwd=True, end_stop=True),
+             _rep(end_start=[2], end_stop=True), _rep()]
+    order, ending = N.expand_repeats(volta)
+    assert order == [0, 1, 2, 1, 3, 4]
+    assert ending == [None, None, 1, None, 2, None]
+    assert N.expand_repeats([_rep(fwd=True), _rep(bwd=True, times=3), _rep()])[0] == [0, 1, 0, 1, 0, 1, 2]
+    assert N.expand_repeats([_rep(), _rep(fine=True), _rep(dacapo=True)])[0] == [0, 1, 2, 0, 1]
+    ds = [_rep(), _rep(segno="s"), _rep(tocoda="c"), _rep(dalsegno="s"), _rep(coda="c")]
+    assert N.expand_repeats(ds)[0] == [0, 1, 2, 3, 1, 2, 4]
+
+
+def test_pass_lyrics_picks_the_verse():
+    both = (("1", "single", "a"), ("2", "single", "b"))
+    assert N.pass_lyrics(both, None, True) == both
+    assert N.pass_lyrics(both, 1, True) == (("1", "single", "a"),)
+    assert N.pass_lyrics(both, 2, True) == (("1", "single", "b"),)
+    assert N.pass_lyrics((("1", None, "a"),), 2, False) == (("1", None, "a"),)     # chỉ một lời: hát lại lời 1
+
+
+def _repeat_lyric_xml():
+    def measure(num, tag, words):
+        notes = "".join(
+            "<note><pitch><step>%s</step><octave>5</octave></pitch><duration>1</duration><voice>1</voice>%s</note>"
+            % ("CDEF"[i], "".join("<lyric number='%d'><syllabic>single</syllabic><text>%s</text></lyric>" % (n, w + str(i))
+                                  for n, w in words))
+            for i in range(4))
+        return "<measure number='%d'>%s%s</measure>" % (num, tag, notes)
+    attrs = ("<attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>")
+    fwd = "<barline location='left'><repeat direction='forward'/></barline>"
+    bwd = "<barline location='right'><repeat direction='backward'/></barline>"
+    m1 = measure(1, attrs + fwd, [(1, "a"), (2, "b")])
+    m2 = measure(2, "", [(1, "c"), (2, "d")]).replace("</measure>", bwd + "</measure>")
+    m3 = measure(3, "", [(1, "e")])
+    return ("<?xml version='1.0'?><score-partwise version='3.1'><part-list><score-part id='P1'>"
+            "<part-name>x</part-name></score-part></part-list><part id='P1'>%s%s%s</part></score-partwise>" % (m1, m2, m3))
+
+
+_REPEAT_WORDS = [w + str(i) for w in "acbde" for i in range(4)]       # a, c (lời 1), b, d (lời 2), e
+
+
+def test_repeats_are_expanded_with_the_right_verse(tmp_path):
+    src = tmp_path / "rep.xml"
+    src.write_text(_repeat_lyric_xml(), encoding="utf-8")
+    dst = str(tmp_path / "out.xml")
+    assert N.main([str(src), dst]) == 0
+    root = ET.parse(dst).getroot()
+    right = root.findall("part")[0].findall("measure")
+    assert [m.get("number") for m in right] == ["1", "2", "3", "4", "5"]
+    assert _lyrics_of(dst) == [("1", "single", w) for w in _REPEAT_WORDS]
+    got, voices, bad = _read_xml(dst)
+    assert voices == {"1"} and not bad
+    assert len(got["P1"]) == 20
+    off = tmp_path / "off.xml"
+    assert N.main([str(src), str(off), "--no-expand-repeats"]) == 0
+    assert len(ET.parse(str(off)).getroot().findall("part")[0].findall("measure")) == 3
+
+
+def test_regrid_extract_expands_repeats(tmp_path):
+    import xml_regrid_piano as X
+    src = tmp_path / "rep.xml"
+    src.write_text(_repeat_lyric_xml(), encoding="utf-8")
+    notes = X.extract_notes_from_musicxml(str(src), 60)
+    assert [n.start for n in notes] == [float(i) for i in range(20)]
+    assert [n.lyric[0][2] for n in notes] == _REPEAT_WORDS
+    assert all(n.lyric[0][0] == "1" and len(n.lyric) == 1 for n in notes)
+    assert len(X.extract_notes_from_musicxml(str(src), 60, expand_repeats=False)) == 12

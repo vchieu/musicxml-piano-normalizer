@@ -252,6 +252,11 @@
       <input type="checkbox" id="simplify" />
       --simplify (LH 3 / RH 1, bỏ láy)
     </label>
+
+    <label class="check" title="Chỉ MusicXML. Chép đoạn lặp (repeat, nhà 1/nhà 2, D.C./D.S.) ra đúng thứ tự được chơi, nên bản sạch có đủ nốt. Lyrics tự chỉnh theo từng lần lặp: lần 1 lấy lời 1, lần 2 lấy lời 2 (ghi lại thành lời 1). Bỏ chọn nếu muốn giữ nguyên chỉ một lần.">
+      <input type="checkbox" id="expand_repeats" checked />
+      Chép đoạn lặp ra (MusicXML)
+    </label>
   </div>
 
   <div>
@@ -264,6 +269,11 @@
     <label style="display: inline-flex; align-items: center; gap: 6px; font-size: 13px;">
       <input type="checkbox" id="oneLine" checked />
       Hiện 1 dòng
+    </label>
+    <label style="display: inline-flex; align-items: center; gap: 6px; font-size: 13px;"
+           title="File MIDI chưa có bản nhạc để vẽ (chỉ có thời điểm bấm phím), nên khi chọn file sẽ tự chuẩn hóa với các option hiện tại để hiện bản nhạc ngay. Đổi option xong thì bấm Normalize để chạy lại.">
+      <input type="checkbox" id="autoMidi" checked />
+      Tự Normalize khi chọn file MIDI
     </label>
   </div>
 
@@ -362,6 +372,7 @@
       if (lhMax !== null) parts.push("--lh-max", String(lhMax));
       if (rhMax !== null) parts.push("--rh-max", String(rhMax));
       if ($("drop_ornaments").checked) parts.push("--drop-ornaments");
+      if (kind === "xml" && !$("expand_repeats").checked) parts.push("--no-expand-repeats");
 
       const cmd = parts.join(" ");
       $("command").textContent = cmd;
@@ -373,6 +384,7 @@
       const isXml = kind === "xml";
       $("hand").disabled = !isXml;
       $("split_chords").disabled = !isXml;
+      $("expand_repeats").disabled = !isXml;
       $("pane-before").hidden = true;   // bản gốc hiện ngay trên khuông chính
       buildCommand();
     }
@@ -485,6 +497,9 @@
 
     function clearScore() {
       cursorTicks = [];
+      cursorMap = null;
+      firstPlay = null;
+      playIdx = 0;
       cursorIdx = 0;
       stepPos = null;
       $("score-title").textContent = "Bản nhạc";
@@ -554,47 +569,192 @@
       return out;
     }
 
-    // Đi hết các bước cursor, dựng MIDI từ chính các nốt ở từng bước. Trả {ticks, midi (base64)} hoặc null.
-    function buildPreviewFromOsmd(bpm) {
+    /* patch: phát theo thứ tự lặp (repeat, nhà 1/nhà 2, D.C., D.S., coda, fine) */
+    let cursorMap = null;      // cursorMap[j] = chỉ số bước (theo thứ tự cursor của OSMD đi) của bước phát j; null = trùng nhau
+    let cursorWalkLen = 0;     // tổng số bước cursor của OSMD
+    let firstPlay = null;      // firstPlay[w] = bước phát đầu tiên ứng với bước OSMD w (dùng khi click để tua)
+    let playIdx = 0;           // bước phát hiện tại
+
+    function walkLen() { return cursorMap ? cursorWalkLen : cursorTicks.length; }
+
+    // Đọc dấu lặp từ MusicXML: mỗi phần tử là một ô nhịp của part đầu tiên (theo thứ tự trong file).
+    function parseRepeatInfo(xml) {
+      const doc = new DOMParser().parseFromString(xml, "application/xml");
+      if (doc.getElementsByTagName("parsererror").length) return null;
+      const part = doc.getElementsByTagName("part")[0];
+      if (!part) return null;
+      const out = [];
+      const ms = part.getElementsByTagName("measure");
+      for (let i = 0; i < ms.length; i++) {
+        const m = ms[i];
+        const info = { fwd: false, bwd: false, times: 2, endStart: null, endStop: false,
+                       segno: null, coda: null, dacapo: false, dalsegno: null, tocoda: null, fine: false };
+        const bars = m.getElementsByTagName("barline");
+        for (let b = 0; b < bars.length; b++) {
+          const rep = bars[b].getElementsByTagName("repeat")[0];
+          if (rep) {
+            const dir = rep.getAttribute("direction");
+            if (dir === "forward") {
+              info.fwd = true;
+            } else if (dir === "backward") {
+              info.bwd = true;
+              const t = parseInt(rep.getAttribute("times"), 10);
+              if (t >= 1) info.times = t;
+            }
+          }
+          const end = bars[b].getElementsByTagName("ending")[0];
+          if (end) {
+            const type = end.getAttribute("type");
+            if (type === "start") {
+              const nums = (end.getAttribute("number") || "1").split(/[,\s]+/)
+                .map(function (x) { return parseInt(x, 10); })
+                .filter(function (x) { return x > 0; });
+              info.endStart = nums.length ? nums : [1];
+            } else if (type === "stop" || type === "discontinue") {
+              info.endStop = true;
+            }
+          }
+        }
+        const sounds = m.getElementsByTagName("sound");
+        for (let s = 0; s < sounds.length; s++) {
+          const so = sounds[s];
+          if (so.hasAttribute("segno")) info.segno = so.getAttribute("segno");
+          if (so.hasAttribute("coda")) info.coda = so.getAttribute("coda");
+          if (so.hasAttribute("dacapo")) info.dacapo = so.getAttribute("dacapo") !== "no";
+          if (so.hasAttribute("dalsegno")) info.dalsegno = so.getAttribute("dalsegno");
+          if (so.hasAttribute("tocoda")) info.tocoda = so.getAttribute("tocoda");
+          if (so.hasAttribute("fine")) info.fine = true;
+        }
+        out.push(info);
+      }
+      return out;
+    }
+
+    // Thứ tự các ô nhịp được chơi (chỉ số ô nhịp, có lặp). Sau D.C./D.S. không lặp lại và chơi nhà cuối.
+    function expandRepeats(info) {
+      const n = info.length;
+      const segnoAt = {};
+      const codaAt = {};
+      let maxEnd = 1;
+      for (let i = 0; i < n; i++) {
+        if (info[i].segno !== null) segnoAt[info[i].segno] = i;
+        if (info[i].coda !== null) codaAt[info[i].coda] = i;
+        if (info[i].endStart) maxEnd = Math.max(maxEnd, Math.max.apply(null, info[i].endStart));
+      }
+      const order = [];
+      let rs = 0;               // đầu đoạn lặp hiện tại
+      let pass = 1;             // lần chơi thứ mấy của đoạn đó
+      let jumped = false;       // đã nhảy D.C. / D.S.
+      let back = false;         // vừa quay về đầu đoạn lặp
+      let i = 0;
+      let guard = 0;
+      while (i < n && guard++ < 20000 && order.length < 20000) {
+        const mm = info[i];
+        if (mm.fwd && !back) { rs = i; pass = 1; }
+        back = false;
+        const eff = jumped ? maxEnd : pass;
+        if (mm.endStart && mm.endStart.indexOf(eff) < 0) {      // nhà không thuộc lần này: bỏ qua cả nhà
+          let j = i;
+          while (j < n && !info[j].endStop) j++;
+          i = j + 1;
+          continue;
+        }
+        order.push(i);
+        if (jumped && mm.fine) break;
+        if (jumped && mm.tocoda !== null && codaAt[mm.tocoda] !== undefined) {
+          i = codaAt[mm.tocoda];
+          continue;
+        }
+        if (mm.bwd && !jumped) {
+          if (pass < mm.times) { pass++; i = rs; back = true; continue; }
+          pass = 1;
+          rs = i + 1;
+        }
+        if (!jumped && mm.dacapo) { jumped = true; i = 0; continue; }
+        if (!jumped && mm.dalsegno !== null && segnoAt[mm.dalsegno] !== undefined) {
+          jumped = true;
+          i = segnoAt[mm.dalsegno];
+          continue;
+        }
+        i++;
+      }
+      return order;
+    }
+
+    // Đi hết các bước cursor của OSMD (kể cả khi OSMD tự lặp), gom nốt của lần ghé đầu mỗi ô nhịp,
+    // rồi dựng MIDI theo thứ tự chơi có lặp. Trả {ticks, map, walkLen, first, midi (base64), expanded} hoặc null.
+    function buildPreviewFromOsmd(bpm, xml) {
       const c = osmdAfter && osmdAfter.cursor;
-      if (!c) return null;
-      const events = [];
-      const ticks = [];
+      const sheet = osmdAfter && osmdAfter.Sheet;
+      if (!c || !sheet || !sheet.SourceMeasures) return null;
+      const steps = [];                  // mọi bước theo thứ tự cursor đi: {t, w}
+      const byM = [];                    // byM[m] = các bước của lần ghé đầu ô nhịp m: {t, w, notes: [[pitch, tick dài]]}
       let ok = true;
       let nNotes = 0;
+      let nM = 0;
+      const mStart = [];
+      const mEnd = [];
       try {
+        const sm = sheet.SourceMeasures;
+        nM = sm.length;
+        const toTick = function (fr) { return Math.round(fr.RealValue * 4 * TICKS_PER_QUARTER); };
+        for (let i = 0; i < nM; i++) mStart.push(toTick(sm[i].AbsoluteTimestamp));
+        for (let i = 0; i < nM; i++) mEnd.push(i + 1 < nM ? mStart[i + 1] : mStart[i] + toTick(sm[i].Duration));
+        const measureOf = function (t) {
+          let lo = 0;
+          let hi = nM - 1;
+          while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (mStart[mid] <= t) lo = mid; else hi = mid - 1;
+          }
+          return lo;
+        };
+
         c.hide();                          // hide: reset()/next() không vẽ lại, không cuộn trang
         c.reset();
         const it = osmdIterator(c);
         const adv = (it && typeof it.moveToNext === "function")
           ? function () { it.moveToNext(); }
           : function () { c.next(); };
+        const collected = {};
+        let skipping = false;
+        let lastM = -1;
+        let lastT = -1;
         let guard = 0;
-        let prev = -1;
         while (it && !it.EndReached && guard++ < 200000) {
           const t = stepTick(it);
-          if (t === null || t <= prev) { ok = false; break; }   // thiếu timestamp, hoặc đi ngược (repeat)
-          prev = t;
-          ticks.push(t);
-          const notes = osmdNotesAt(c, it);
-          for (let k = 0; k < notes.length; k++) {
-            const n = notes[k];
-            if (!n || (typeof n.isRest === "function" && n.isRest())) continue;
-            const tie = n.NoteTie;
-            if (tie && tie.StartNote && tie.StartNote !== n) continue;   // phần nối: đã tính ở nốt đầu
-            if (typeof n.halfTone !== "number" || !n.Length) continue;
-            let len = n.Length.RealValue;
-            if (tie && tie.Notes && tie.Notes.length) {
-              len = 0;
-              for (let j = 0; j < tie.Notes.length; j++) len += tie.Notes[j].Length.RealValue;
-            }
-            const pitch = n.halfTone + 12;
-            if (pitch < 0 || pitch > 127) continue;
-            const dur = Math.max(1, Math.round(len * 4 * TICKS_PER_QUARTER));
-            events.push([t, 2, [0x90, pitch, 80]]);
-            events.push([t + dur, 1, [0x80, pitch, 0]]);
-            nNotes++;
+          if (t === null) { ok = false; break; }
+          const m = measureOf(t);
+          if (t < mStart[m] || t >= mEnd[m]) { ok = false; break; }   // timestamp không phải vị trí trong bản nhạc
+          const w = steps.length;
+          if (m !== lastM || t <= lastT) {                          // vào ô nhịp mới, hoặc nhảy về (lặp)
+            skipping = !!collected[m];
+            if (!skipping) collected[m] = true;
           }
+          steps.push({ t: t, w: w });
+          if (!skipping) {
+            const notes = [];
+            const found = osmdNotesAt(c, it);
+            for (let k = 0; k < found.length; k++) {
+              const n = found[k];
+              if (!n || (typeof n.isRest === "function" && n.isRest())) continue;
+              const tie = n.NoteTie;
+              if (tie && tie.StartNote && tie.StartNote !== n) continue;   // phần nối: đã tính ở nốt đầu
+              if (typeof n.halfTone !== "number" || !n.Length) continue;
+              let len = n.Length.RealValue;
+              if (tie && tie.Notes && tie.Notes.length) {
+                len = 0;
+                for (let j = 0; j < tie.Notes.length; j++) len += tie.Notes[j].Length.RealValue;
+              }
+              const pitch = n.halfTone + 12;
+              if (pitch < 0 || pitch > 127) continue;
+              notes.push([pitch, Math.max(1, Math.round(len * 4 * TICKS_PER_QUARTER))]);
+              nNotes++;
+            }
+            (byM[m] = byM[m] || []).push({ t: t, w: w, notes: notes });
+          }
+          lastM = m;
+          lastT = t;
           adv();
         }
       } catch (e) {
@@ -602,13 +762,59 @@
         console.warn("buildPreviewFromOsmd lỗi:", e);
       }
       try { c.reset(); c.hide(); } catch (e) { /* ignore */ }
-      if (!ok || !ticks.length || !nNotes) {
-        console.warn("buildPreviewFromOsmd: không dựng được (ok=" + ok + ", bước=" + ticks.length +
+      if (!ok || !steps.length || !nNotes) {
+        console.warn("buildPreviewFromOsmd: không dựng được (ok=" + ok + ", bước=" + steps.length +
                      ", nốt=" + nNotes + "), dùng MIDI từ server");
         return null;
       }
-      console.info("MIDI nghe thử dựng từ OSMD: " + ticks.length + " bước cursor, " + nNotes + " nốt");
-      return { ticks: ticks, midi: bytesToBase64(buildMidiBytes(events, bpm)) };
+
+      // Thứ tự chơi các ô nhịp (có lặp), đọc từ chính MusicXML
+      let order = [];
+      let info = null;
+      try { info = parseRepeatInfo(xml); } catch (e) { info = null; }
+      if (info && info.length === nM) {
+        order = expandRepeats(info);
+      } else {
+        for (let i = 0; i < nM; i++) order.push(i);
+        console.warn("Không khớp số ô nhịp (XML " + (info ? info.length : "?") + ", OSMD " + nM +
+                     "): phát tuần tự, bỏ qua dấu lặp");
+      }
+
+      const events = [];
+      const ticks = [];
+      const map = [];
+      const tickToPlay = {};
+      let base = 0;
+      for (let v = 0; v < order.length; v++) {
+        const m = order[v];
+        const len = mEnd[m] - mStart[m];
+        const cont = v + 1 < order.length && order[v + 1] === m + 1;   // ô kế là ô liền sau: nốt được ngân tiếp
+        const list = byM[m] || [];
+        for (let s = 0; s < list.length; s++) {
+          const st = list[s];
+          const p = base + (st.t - mStart[m]);
+          ticks.push(p);
+          map.push(st.w);
+          if (tickToPlay[st.t] === undefined) tickToPlay[st.t] = ticks.length - 1;
+          for (let k = 0; k < st.notes.length; k++) {
+            let e = p + st.notes[k][1];
+            if (!cont) e = Math.min(e, base + len);                    // nhảy sang chỗ khác: cắt nốt ở cuối ô
+            events.push([p, 2, [0x90, st.notes[k][0], 80]]);
+            events.push([Math.max(p + 1, e), 1, [0x80, st.notes[k][0], 0]]);
+          }
+        }
+        base += len;
+      }
+      if (!ticks.length) return null;
+      const first = [];
+      for (let w = 0; w < steps.length; w++) {
+        const j = tickToPlay[steps[w].t];
+        first.push(j === undefined ? 0 : j);
+      }
+      console.info("MIDI nghe thử dựng từ OSMD: " + steps.length + " bước cursor, " + nNotes + " nốt, " +
+                   nM + " ô nhịp, phát " + order.length + " ô nhịp (có lặp: " + (order.length !== nM) + ")");
+      return { ticks: ticks, map: map, walkLen: steps.length, first: first,
+               midi: bytesToBase64(buildMidiBytes(events, bpm)), expanded: order.length !== nM };
     }
 
     async function previewOriginal() {
@@ -618,7 +824,12 @@
       if (!file) { clearScore(); return; }
       if (currentKind() !== "xml") {
         clearScore();
-        setStatus("File MIDI không có bản nhạc để vẽ. Bấm Normalize để xem bản sạch.");
+        if ($("autoMidi") && $("autoMidi").checked) {
+          setStatus("File MIDI chưa có bản nhạc để vẽ, đang chuẩn hóa với các option hiện tại...");
+          applyNormalize();
+        } else {
+          setStatus("File MIDI chưa có bản nhạc để vẽ. Bấm Normalize để xem bản sạch.");
+        }
         return;
       }
       setStatus("Đang đọc bản gốc...");
@@ -636,11 +847,15 @@
         await renderAfter(data.xml);
         if (token !== previewToken) return;
         $("score-title").textContent = "Bản gốc (chưa normalize)";
-        const built = buildPreviewFromOsmd(data.bpm);
+        const built = buildPreviewFromOsmd(data.bpm, data.xml);
         if (built) {
-          data.midi = built.midi;           // MIDI dựng từ chính các bước cursor: cursor luôn khớp nhạc
+          data.midi = built.midi;           // MIDI dựng từ chính các bước cursor, có lặp: cursor luôn khớp nhạc
           cursorTicks = built.ticks;
+          cursorMap = built.map;
+          cursorWalkLen = built.walkLen;
+          firstPlay = built.first;
           cursorIdx = 0;
+          playIdx = 0;
           stepPos = null;
         } else {
           buildCursorMap(data.xml);          // dự phòng: MIDI từ server + bảng tick theo XML
@@ -723,6 +938,9 @@
 
     function buildCursorMap(xml) {
       stepPos = null;
+      cursorMap = null;
+      firstPlay = null;
+      playIdx = 0;
       cursorTicks = [];
       cursorIdx = 0;
       try {
@@ -762,6 +980,7 @@
 
     function cursorReset() {
       cursorIdx = 0;
+      playIdx = 0;
       pendingTick = 0;
       cursorFirstSkipped = false;
       try {
@@ -785,6 +1004,18 @@
           cursorFollow();
           return;
         }
+        if (cursorMap) {                      // có lặp: tìm bước phát rồi đưa cursor tới bước OSMD tương ứng
+          let j = Math.min(playIdx, cursorTicks.length - 1);
+          if (cursorTicks[j] > tick) j = 0;   // tua lùi
+          while (j + 1 < cursorTicks.length && cursorTicks[j + 1] <= tick) j++;
+          playIdx = j;
+          const w = cursorMap[j];
+          if (w !== cursorIdx) {
+            if (w === cursorIdx + 1) { c.next(); cursorIdx = w; cursorFollow(); }
+            else moveCursorTo(w);
+          }
+          return;
+        }
         let target = cursorIdx;
         while (target + 1 < cursorTicks.length && cursorTicks[target + 1] <= tick) target++;
         const from = cursorIdx;
@@ -805,7 +1036,7 @@
     function moveCursorTo(idx) {
       const c = osmdAfter && osmdAfter.cursor;
       if (!c || !cursorTicks.length) return;
-      idx = Math.max(0, Math.min(idx, cursorTicks.length - 1));
+      idx = Math.max(0, Math.min(idx, walkLen() - 1));
       c.hide();                                  // hide: next()/reset() không vẽ lại, không cuộn
       if (idx < cursorIdx) { c.reset(); cursorIdx = 0; }
       while (cursorIdx < idx) { c.next(); cursorIdx++; }
@@ -818,7 +1049,7 @@
       if (stepPos) return stepPos;
       const c = osmdAfter && osmdAfter.cursor;
       const box = $("score-after");
-      const n = cursorTicks.length;
+      const n = walkLen();
       if (!c || !box || !n) return null;
       const prevIdx = cursorIdx;
       const prevFollow = osmdAfter.FollowCursor;
@@ -869,7 +1100,9 @@
 
     function seekToStep(idx) {
       moveCursorTo(idx);
-      const tick = cursorTicks[idx];
+      const j = (cursorMap && firstPlay) ? firstPlay[idx] : idx;
+      const tick = cursorTicks[j];
+      playIdx = j;
       if (midiPlayer && playbackStarted) {           // đang chạy hoặc đang tạm dừng
         const wasPlaying = playing;
         stopAllNotes();
@@ -1318,6 +1551,7 @@
       if (rhMax !== null) form.append("rh_max", String(rhMax));
       form.append("drop_ornaments", $("drop_ornaments").checked ? "true" : "false");
       form.append("simplify", $("simplify").checked ? "true" : "false");
+      form.append("expand_repeats", $("expand_repeats").checked ? "true" : "false");
 
       let data = null;
       try {

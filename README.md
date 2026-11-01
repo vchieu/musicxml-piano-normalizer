@@ -105,6 +105,7 @@ Máy này không cho pytest ghi vào `%TEMP%\pytest-of-Admin`, nên nếu gặp 
 | `--drop-grace` | tắt | Bỏ grace note (mặc định giữ) |
 | `--no-fill-rests` | tắt | Không ghi dấu nghỉ, khoảng trống dùng `<forward>` |
 | `--keep-beams` | tắt | Không còn tác dụng (beam luôn do phần mềm chấm nhạc tự vẽ) |
+| `--no-expand-repeats` | tắt | Không chép đoạn lặp ra. Mặc định chép ra (repeat, nhà 1/2, D.C./D.S./coda) và lyrics theo từng lần lặp: lần 1 lời 1, lần 2 lời 2... (ghi lại thành lời 1) |
 
 ### Input MIDI
 

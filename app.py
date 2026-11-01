@@ -41,7 +41,7 @@ def _resolve_simplify(simplify, lh_max, rh_max, drop_ornaments):
 
 
 def _command(kind, *, beats, split, hand, split_chords, downbeat, max_bpm, fine, min_dur,
-             lh_max, rh_max, drop_ornaments, simplify):
+             lh_max, rh_max, drop_ornaments, simplify, expand_repeats=True):
     """Câu lệnh CLI đúng cho loại input, chỉ gồm flag khác mặc định."""
     if kind == "midi":
         parts = ["python", "normalize_piano_musicxml.py", "input.mid", "clean.xml"]
@@ -59,6 +59,8 @@ def _command(kind, *, beats, split, hand, split_chords, downbeat, max_bpm, fine,
             parts += ["--hand", hand]
         if split_chords:
             parts.append("--split-chords")
+        if not expand_repeats:
+            parts.append("--no-expand-repeats")
     if downbeat != "auto":
         parts += ["--downbeat", downbeat]
     if abs(float(max_bpm) - default_max_bpm) > 1e-9:
@@ -93,6 +95,7 @@ def _normalize_sync(
     rh_max: Optional[int] = Form(None),
     drop_ornaments: bool = Form(False),
     simplify: bool = Form(False),
+    expand_repeats: bool = Form(True),
 ):
     suffix = os.path.splitext(filename)[1].lower()
 
@@ -142,7 +145,8 @@ def _normalize_sync(
                 engine_min_dur = min_dur
             else:
                 notes = X.extract_notes_from_musicxml(src, threshold, hand=hand,
-                                                      split_chords=split_chords)
+                                                      split_chords=split_chords,
+                                                      expand_repeats=bool(expand_repeats))
                 controls = None
                 fifths, bpm_hint = X.read_score_meta(src)
                 beats_in, anchor_in = X.read_bar_meta(src)
@@ -187,7 +191,8 @@ def _normalize_sync(
     command = _command(kind, beats=beats, split=split, hand=hand, split_chords=split_chords,
                        downbeat=downbeat, max_bpm=engine_bpm, fine=fine,
                        min_dur=engine_min_dur, lh_max=lh_max, rh_max=rh_max,
-                       drop_ornaments=drop_ornaments, simplify=simplify)
+                       drop_ornaments=drop_ornaments, simplify=simplify,
+                       expand_repeats=bool(expand_repeats))
 
     return {
         "xml": xml_text,
@@ -221,6 +226,7 @@ async def normalize(
     rh_max: Optional[int] = Form(None),
     drop_ornaments: bool = Form(False),
     simplify: bool = Form(False),
+    expand_repeats: bool = Form(True),
 ):
     data = await file.read()
     if len(data) > MAX_UPLOAD:
@@ -230,7 +236,7 @@ async def normalize(
         _normalize_sync, data, file.filename or "input.mid",
         beats=beats, split=split, hand=hand, split_chords=split_chords, downbeat=downbeat,
         max_bpm=max_bpm, fine=fine, min_dur=min_dur, lh_max=lh_max, rh_max=rh_max,
-        drop_ornaments=drop_ornaments, simplify=simplify,
+        drop_ornaments=drop_ornaments, simplify=simplify, expand_repeats=expand_repeats,
     )
 
 
@@ -259,7 +265,7 @@ def _preview_sync(data: bytes, filename: str):
             root = N.load_musicxml_root(src)
             if root.tag != "score-partwise":
                 raise ValueError("chỉ hỗ trợ score-partwise, nhưng root là <%s>" % root.tag)
-            notes = X.extract_notes_from_musicxml(src, N.MIDDLE_C)
+            notes = X.extract_notes_from_musicxml(src, N.MIDDLE_C, expand_repeats=False)
             _fifths, bpm = X.read_score_meta(src)
         except Exception as e:
             raise HTTPException(400, f"Không đọc được MusicXML: {e}")

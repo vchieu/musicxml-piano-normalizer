@@ -88,7 +88,7 @@ def read_bar_meta(path):
     return beats, anchor
 
 
-def extract_notes_from_musicxml(path, split_midi, hand="auto", split_chords=False):
+def extract_notes_from_musicxml(path, split_midi, hand="auto", split_chords=False, expand_repeats=True):
     """
     MusicXML -> [Note] với thời gian tính bằng phách đen.
     - Phân tay giống run_musicxml: dùng N.assign_hand với tay theo part (part cao = tay phải).
@@ -127,6 +127,7 @@ def extract_notes_from_musicxml(path, split_midi, hand="auto", split_chords=Fals
 
     # Lượt 1: gom mọi event với thời gian tuyệt đối (phách đen).
     raw = []  # (chỉ số part, Event, start_q, end_q)
+    cache = {}  # chỉ số ô nhịp -> (độ dài phách đen, [(part, Event, divisions)]); mỗi ô nhịp đọc đúng một lần
     t = 0.0
 
     for mi in range(max_measures):
@@ -152,12 +153,38 @@ def extract_notes_from_musicxml(path, split_midi, hand="auto", split_chords=Fals
         end_q = max(ends_q, default=0)
         measure_len = end_q if implicit and 0 < end_q < nominal_q else max(nominal_q, end_q)
 
+        entries = []
         for pi, evs in parsed:
             div = max(1, states[pi]["divisions"])
             for ev in evs:
                 if ev.items:
-                    raw.append((pi, ev, t + ev.onset / div, t + (ev.onset + ev.duration) / div))
+                    entries.append((pi, ev, div))
+        cache[mi] = (measure_len, entries)
 
+    # Thứ tự chơi các ô nhịp: tuyến tính, hoặc chép đoạn lặp ra (repeat, nhà 1/2, D.C./D.S.).
+    # Lyrics theo lần chơi: lần k lấy lời k (ghi lại thành lời 1).
+    order = [mi for mi in range(max_measures) if mi in cache]
+    passes = [None] * len(order)
+    verses = {}
+    if expand_repeats:
+        rep_info = N.parse_repeat_info(max(part_measures, key=len))
+        if len(rep_info) == max_measures:
+            full, ending_pass = N.expand_repeats(rep_info)
+            kept = [(mi, ep) for mi, ep in zip(full, ending_pass) if mi in cache]
+            if kept:
+                order = [mi for mi, _ in kept]
+                passes = N.lyric_passes(order, [ep for _, ep in kept])
+                verses = {mi: N.measure_verses([ev for _pi, ev, _d in cache[mi][1]]) for mi in set(order)}
+
+    raw_lyr = []  # song song với raw: (lần chơi k hoặc None, ô nhịp có lời k)
+    t = 0.0
+    for v, mi in enumerate(order):
+        measure_len, entries = cache[mi]
+        k = passes[v]
+        has_k = k in verses.get(mi, ()) if k is not None else False
+        for pi, ev, div in entries:
+            raw.append((pi, ev, t + ev.onset / div, t + (ev.onset + ev.duration) / div))
+            raw_lyr.append((k, has_k))
         t += measure_len
 
     # Tay theo part giống run_musicxml: part có pitch trung bình cao hơn là tay phải.
@@ -173,7 +200,8 @@ def extract_notes_from_musicxml(path, split_midi, hand="auto", split_chords=Fals
     notes = []
     open_ties = {}  # (part, voice, pitch) -> Note đang chờ tie stop
 
-    for pi, ev, start_q, end_q in raw:
+    for ri, (pi, ev, start_q, end_q) in enumerate(raw):
+        lyr_k, lyr_has = raw_lyr[ri]
         items = [(m, o) for m, o in ev.items if m is not None]
         if not items:
             continue
@@ -194,7 +222,7 @@ def extract_notes_from_musicxml(path, split_midi, hand="auto", split_chords=Fals
                 continue
 
             note = N.Note(pitch=midi, start=start_q, end=end_q, velocity=90, track=0, hand=h,
-                          lyric=N.note_lyrics(orig) or None)
+                          lyric=N.pass_lyrics(N.note_lyrics(orig), lyr_k, lyr_has) or None)
             notes.append(note)
             if "start" in kinds:
                 open_ties[key] = note
@@ -223,6 +251,9 @@ def build_parser():
     p.add_argument("--split-chords", action="store_true",
                    help="Tách từng nốt trong chord theo --split.")
 
+    p.add_argument("--no-expand-repeats", dest="expand_repeats", action="store_false",
+                   help="Không chép đoạn lặp (repeat, nhà 1/2, D.C./D.S.) ra. Mặc định chép ra, "
+                        "lyrics theo từng lần lặp: lần 1 lời 1, lần 2 lời 2...")
     p.add_argument("--offset-beats", type=float, default=0.0,
                    help="Dịch toàn bộ nốt sang phải bao nhiêu phách đen.")
 
@@ -276,6 +307,7 @@ def main(argv=None):
         split_midi=split_midi,
         hand=args.hand,
         split_chords=args.split_chords,
+        expand_repeats=args.expand_repeats,
     )
 
     if not notes:

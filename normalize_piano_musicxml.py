@@ -1520,6 +1520,164 @@ def build_sequence(events, measure_duration):
     return seq
 
 
+# --------------------------------------------------------------------------- #
+# Lặp (repeat / nhà 1-2 / D.C. / D.S. / coda) -> thứ tự các ô nhịp được chơi, và lyrics theo từng lần chơi
+# --------------------------------------------------------------------------- #
+
+def _ending_numbers(text):
+    """Số nhà trong <ending number="..."> : "1, 2" -> [1, 2]; "1-3" -> [1, 2, 3]."""
+    nums = []
+    for tok in re.split(r"[,\s]+", text or ""):
+        m = re.match(r"^(\d+)(?:-(\d+))?\.?$", tok)
+        if m:
+            a = int(m.group(1))
+            b = int(m.group(2) or a)
+            nums.extend(range(a, max(a, b) + 1))
+    return [n for n in nums if n > 0] or [1]
+
+
+def parse_repeat_info(measure_elems):
+    """Dấu lặp của từng ô nhịp (danh sách <measure> của một part), theo thứ tự trong file."""
+    out = []
+    for m in measure_elems:
+        info = dict(fwd=False, bwd=False, times=2, end_start=None, end_stop=False,
+                    segno=None, coda=None, dacapo=False, dalsegno=None, tocoda=None, fine=False)
+        for bar in m.findall("barline"):
+            rep = bar.find("repeat")
+            if rep is not None:
+                if rep.get("direction") == "forward":
+                    info["fwd"] = True
+                elif rep.get("direction") == "backward":
+                    info["bwd"] = True
+                    try:
+                        times = int(rep.get("times"))
+                    except (TypeError, ValueError):
+                        times = 0
+                    if times >= 1:
+                        info["times"] = times
+            end = bar.find("ending")
+            if end is not None:
+                if end.get("type") == "start":
+                    info["end_start"] = _ending_numbers(end.get("number"))
+                elif end.get("type") in ("stop", "discontinue"):
+                    info["end_stop"] = True
+        for so in m.iter("sound"):
+            if so.get("segno") is not None:
+                info["segno"] = so.get("segno")
+            if so.get("coda") is not None:
+                info["coda"] = so.get("coda")
+            if so.get("dacapo") is not None:
+                info["dacapo"] = so.get("dacapo") != "no"
+            if so.get("dalsegno") is not None:
+                info["dalsegno"] = so.get("dalsegno")
+            if so.get("tocoda") is not None:
+                info["tocoda"] = so.get("tocoda")
+            if so.get("fine") is not None:
+                info["fine"] = True
+        out.append(info)
+    return out
+
+
+def expand_repeats(info):
+    """
+    (order, ending_pass): chỉ số các ô nhịp theo thứ tự được chơi, và với mỗi ô nhịp nằm trong một nhà
+    thì số nhà đang chơi (còn lại None). Sau D.C. / D.S. không lặp lại nữa và chơi nhà cuối.
+    """
+    n = len(info)
+    segno_at, coda_at, max_end = {}, {}, 1
+    for i, mm in enumerate(info):
+        if mm["segno"] is not None:
+            segno_at[mm["segno"]] = i
+        if mm["coda"] is not None:
+            coda_at[mm["coda"]] = i
+        if mm["end_start"]:
+            max_end = max(max_end, max(mm["end_start"]))
+    order, ending_pass = [], []
+    rs, pass_no, cur_end = 0, 1, None       # đầu đoạn lặp, lần chơi thứ mấy, nhà đang chơi
+    jumped = back = False
+    i = guard = 0
+    while i < n and guard < 20000 and len(order) < 20000:
+        guard += 1
+        mm = info[i]
+        if mm["fwd"] and not back:
+            rs, pass_no = i, 1
+        back = False
+        eff = max_end if jumped else pass_no
+        if mm["end_start"] and eff not in mm["end_start"]:      # nhà không thuộc lần này: bỏ qua cả nhà
+            j = i
+            while j < n and not info[j]["end_stop"]:
+                j += 1
+            i = j + 1
+            continue
+        if mm["end_start"]:
+            cur_end = eff
+        order.append(i)
+        ending_pass.append(cur_end)
+        if mm["end_stop"]:
+            cur_end = None
+        if jumped and mm["fine"]:
+            break
+        if jumped and mm["tocoda"] is not None and mm["tocoda"] in coda_at:
+            i = coda_at[mm["tocoda"]]
+            continue
+        if mm["bwd"] and not jumped:
+            if pass_no < mm["times"]:
+                pass_no += 1
+                i = rs
+                back = True
+                continue
+            pass_no, rs = 1, i + 1
+        if not jumped and mm["dacapo"]:
+            jumped, i = True, 0
+            continue
+        if not jumped and mm["dalsegno"] is not None and mm["dalsegno"] in segno_at:
+            jumped, i = True, segno_at[mm["dalsegno"]]
+            continue
+        i += 1
+    return order, ending_pass
+
+
+def lyric_passes(order, ending_pass):
+    """
+    Lần chơi (lời thứ mấy) của từng lần ghé ô nhịp: số nhà nếu ô nằm trong nhà; ô được chơi nhiều
+    lần thì là lần ghé thứ mấy; ô chỉ chơi một lần ngoài nhà thì None (giữ nguyên lyrics).
+    """
+    total, seen, out = {}, {}, []
+    for m in order:
+        total[m] = total.get(m, 0) + 1
+    for m, ep in zip(order, ending_pass):
+        seen[m] = seen.get(m, 0) + 1
+        out.append(ep if ep is not None else (seen[m] if total[m] > 1 else None))
+    return out
+
+
+def verse_no(number):
+    m = re.search(r"\d+", str(number or ""))
+    return int(m.group()) if m else 1
+
+
+def pass_lyrics(lyrics, k, has_k):
+    """
+    Lyrics của một nốt khi ô nhịp được chơi lần thứ k: lấy lời k và ghi lại thành lời 1.
+    Ô nhịp không có lời k (has_k sai) thì dùng lời 1. k là None: giữ nguyên.
+    """
+    if k is None or not lyrics:
+        return lyrics
+    want = k if has_k else 1
+    return tuple(("1", syl, text) for num, syl, text in lyrics if verse_no(num) == want)
+
+
+def measure_verses(events):
+    """Tập số lời có trong các Event của một ô nhịp."""
+    out = set()
+    for ev in events:
+        for _midi, orig in ev.items:
+            if orig is not None:
+                for num, _syl, _text in note_lyrics(orig):
+                    out.add(verse_no(num))
+    return out
+
+
 def build_part_hand_map(avg_pitch, swap=False):
     """{chỉ số part: "R"/"L"} theo pitch trung bình: part cao là tay phải. Một part -> tay phải."""
     if not avg_pitch:
@@ -1647,6 +1805,8 @@ def _entry_lyrics(entry, idx, orig_note, piece_i, tie_prev, seen):
         return None
     if orig_note is not None:
         lyr = note_lyrics(orig_note)
+        if entry.get("lyric_k") is not None:
+            lyr = pass_lyrics(lyr, entry["lyric_k"], entry.get("lyric_has_k"))
     else:
         lyr = entry.get("lyrics") if idx == 0 else ()
     out = []
@@ -1908,9 +2068,27 @@ def run_musicxml(args):
         if implicit and 0 < max(ends, default=0) < nominal:
             dur = max(ends)               # ô nhịp lấy đà / ô nhịp kết ngắn: không thêm nghỉ cho đủ
         measures.append({"events": evs, "duration": dur, "divisions": div, "short": dur < nominal,
-                         "time": copy.deepcopy(time_e), "key": copy.deepcopy(key_e)})
+                         "time": copy.deepcopy(time_e), "key": copy.deepcopy(key_e),
+                         "beats": states[0]["beats"], "beat_type": states[0]["beat_type"]})
 
     part_hand = build_part_hand_map({pi: pitch_sum[pi] / pitch_cnt[pi] for pi in pitch_sum}, args.swap_parts)
+
+    # Thứ tự chơi các ô nhịp: chép đoạn lặp ra (trừ khi --no-expand-repeats); lyrics theo lần chơi
+    order, passes, verses = list(range(len(measures))), [None] * len(measures), None
+    if getattr(args, "expand_repeats", True):
+        rep_info = parse_repeat_info(max(part_measures, key=len))
+        if len(rep_info) == len(measures):
+            full, ending_pass = expand_repeats(rep_info)
+            if full:
+                order, passes = full, lyric_passes(full, ending_pass)
+                verses = [measure_verses(mm["events"]) for mm in measures]
+    expanded = order != list(range(len(measures)))
+    if expanded:
+        first = 0 if measure_numbers[0] == "0" else 1
+        numbers = [str(first + v) for v in range(len(order))]
+        print("Chép đoạn lặp ra: %d ô nhịp -> %d ô nhịp phát" % (len(measures), len(order)))
+    else:
+        numbers = measure_numbers
 
     # 2. dựng output
     new_root = ET.Element("score-partwise")
@@ -1925,8 +2103,10 @@ def run_musicxml(args):
     left_part = ET.SubElement(new_root, "part")
     left_part.set("id", "P2")
 
-    cur_div = None
-    for mi, info in enumerate(measures):
+    cur_div = cur_sig = None
+    for v, mi in enumerate(order):
+        info = measures[mi]
+        sig = (info["beats"], info["beat_type"])
         right_events, left_events = [], []
         for ev in info["events"]:
             if args.split_chords and args.hand in ("auto", "pitch"):
@@ -1944,20 +2124,26 @@ def run_musicxml(args):
         duration, divisions = info["duration"], info["divisions"]
         right_seq = build_sequence(right_events, duration)
         left_seq = build_sequence(left_events, duration)
+        if passes[v] is not None:
+            for seq in (right_seq, left_seq):
+                for entry in seq:
+                    if entry["type"] == "notes":
+                        entry["lyric_k"] = passes[v]
+                        entry["lyric_has_k"] = passes[v] in verses[mi]
 
         rm = ET.SubElement(right_part, "measure")
         lm = ET.SubElement(left_part, "measure")
         for m in (rm, lm):
-            m.set("number", measure_numbers[mi])
+            m.set("number", numbers[v])
             if info["short"]:
                 m.set("implicit", "yes")
 
-        if mi == 0:
+        if v == 0:
             add_measure_attributes(rm, divisions, initial_key, initial_time, "G", 2)
             add_measure_attributes(lm, divisions, initial_key, initial_time, "F", 4)
             if tempo_direction is not None:
                 rm.append(clean_direction(tempo_direction))
-        elif divisions != cur_div or info["time"] is not None or info["key"] is not None:
+        elif divisions != cur_div or info["time"] is not None or info["key"] is not None or sig != cur_sig:
             for m in (rm, lm):
                 attrs = ET.SubElement(m, "attributes")
                 if divisions != cur_div:
@@ -1966,13 +2152,18 @@ def run_musicxml(args):
                     attrs.append(copy.deepcopy(info["key"]))
                 if info["time"] is not None:
                     attrs.append(copy.deepcopy(info["time"]))
+                elif sig != cur_sig:
+                    time_el = ET.SubElement(attrs, "time")
+                    ET.SubElement(time_el, "beats").text = str(info["beats"])
+                    ET.SubElement(time_el, "beat-type").text = str(info["beat_type"])
         cur_div = divisions
+        cur_sig = sig
 
         for m, seq in ((rm, right_seq), (lm, left_seq)):
             append_sequence_to_measure(m, seq, divisions, duration,
                                        keep_ties=args.keep_ties, no_fill_rests=args.no_fill_rests)
 
-        if mi == len(measures) - 1 and not args.no_final_barline:
+        if v == len(order) - 1 and not args.no_final_barline:
             add_final_barline(rm)
             add_final_barline(lm)
 
@@ -2198,6 +2389,9 @@ def build_parser():
     p.add_argument("--swap-parts", action="store_true", help="(MusicXML) đảo tay phải/trái theo part.")
     p.add_argument("--keep-ties", action="store_true",
                    help="(MusicXML) giữ tie của input khi độ dài nốt không đổi; tie treo bị dọn.")
+    p.add_argument("--no-expand-repeats", dest="expand_repeats", action="store_false",
+                   help="(MusicXML) không chép đoạn lặp (repeat, nhà 1/2, D.C./D.S.) ra. Mặc định chép ra, "
+                        "lyrics theo từng lần lặp: lần 1 lời 1, lần 2 lời 2...")
     p.add_argument("--keep-beams", action="store_true", help="(không còn tác dụng: beam do phần mềm chấm nhạc tự vẽ)")
     p.add_argument("--drop-grace", action="store_true", help="(MusicXML) bỏ grace note (mặc định giữ).")
     p.add_argument("--no-fill-rests", action="store_true",
