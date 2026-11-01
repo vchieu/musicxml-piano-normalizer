@@ -287,7 +287,7 @@ Trang làm được:
 
 - upload `.mid`/`.midi`/`.xml`/`.musicxml`/`.mxl`, chỉnh các flag thật của CLI (beats, split, hand,
   downbeat, max bpm, `--fine`, `--min-dur`, `--lh-max`, `--rh-max`, `--drop-ornaments`, `--simplify`)
-- chọn file MusicXML là bản gốc hiện ngay trên khuông nhạc (OpenSheetMusicDisplay), nghe thử được; bấm Normalize thì khuông đó được thay bằng bản sạch. MIDI không có bản nhạc để vẽ nên chỉ hiện sau khi Normalize
+- chọn file MusicXML là bản gốc hiện ngay trên khuông nhạc (OpenSheetMusicDisplay), nghe thử được; bấm Normalize thì khuông đó được thay bằng bản sạch. MIDI cũng hiện bản gốc ngay (dựng bằng `midi_to_musicxml.py`, chỉ để xem, chưa chuẩn hóa) và phát đúng file MIDI gốc
 - Play/Pause/Stop bằng Web Audio + soundfont (`acoustic_grand_piano`), cursor chạy theo MIDI
 - tải `clean.xml` / `clean.mid`, copy câu lệnh CLI đúng với loại input
 - xem report/stats và tempo/key tìm được

@@ -784,8 +784,9 @@ def test_app_preview_endpoint():
     ons = [p for _, k, p in ev if k == "midi" and p[0] & 0xF0 == 0x90 and p[2] > 0]
     assert len(ons) == len(X.extract_notes_from_musicxml(_MESSY, 60))
 
-    with pytest.raises(HTTPException):                       # MIDI không có bản nhạc để vẽ
-        asyncio.run(A.preview(file=_FakeUpload(_MIDI_SAMPLE)))
+    midi = asyncio.run(A.preview(file=_FakeUpload(_MIDI_SAMPLE)))     # MIDI: bản gốc cũng được vẽ
+    assert midi["input_kind"] == "midi" and ET.fromstring(midi["xml"]).tag == "score-partwise"
+    assert base64.b64decode(midi["midi"]) == open(_MIDI_SAMPLE, "rb").read()
 
 
 # --------------------------------------------------------------------------- #
@@ -869,3 +870,18 @@ def test_regrid_extract_expands_repeats(tmp_path):
     assert [n.lyric[0][2] for n in notes] == _REPEAT_WORDS
     assert all(n.lyric[0][0] == "1" and len(n.lyric) == 1 for n in notes)
     assert len(X.extract_notes_from_musicxml(str(src), 60, expand_repeats=False)) == 12
+
+
+def test_midi_preview_keeps_original_midi(tmp_path):
+    import midi_preview as MP
+    notes, _ = _piece(bars=6)
+    clean = N.normalize(notes)
+    path = tmp_path / "in.mid"
+    N.write_midi(str(path), clean)
+    raw = path.read_bytes()
+    out = MP.preview_from_midi_bytes(raw)
+    assert base64.b64decode(out["midi"]) == raw            # nghe đúng file gốc
+    assert out["ppq"] == N.PPQ and out["input_kind"] == "midi"
+    root = ET.fromstring(out["xml"])
+    assert root.tag == "score-partwise"
+    assert len(root.findall("part/measure")) >= 6

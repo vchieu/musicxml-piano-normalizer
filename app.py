@@ -21,6 +21,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse
 
 import normalize_piano_musicxml as N
+import midi_preview as MP
 import xml_regrid_piano as X
 
 BASE = Path(__file__).resolve().parent
@@ -252,11 +253,22 @@ def _preview_midi(notes, bpm):
     return b"MThd" + struct.pack(">IHHH", 6, 0, 1, N.PPQ) + N._track(ev)
 
 
+def _preview_midi_sync(data: bytes):
+    """MIDI -> bản gốc (chưa normalize) để vẽ + chính file MIDI gốc để nghe."""
+    try:
+        return MP.preview_from_midi_bytes(data)
+    except ValueError as e:
+        raise HTTPException(400, f"Không đọc được MIDI: {e}")
+    except Exception as e:
+        raise HTTPException(500, f"Không dựng được bản xem trước từ MIDI: {e}")
+
+
 def _preview_sync(data: bytes, filename: str):
     suffix = os.path.splitext(filename)[1].lower()
+    if suffix in N._MIDI_EXT:
+        return _preview_midi_sync(data)
     if suffix not in N._XML_IN_EXT:
-        raise HTTPException(400, "Chỉ xem trước được file MusicXML (.xml/.musicxml/.mxl); "
-                                 "MIDI không có bản nhạc để vẽ")
+        raise HTTPException(400, "Chỉ xem trước được .mid/.midi/.xml/.musicxml/.mxl")
     with tempfile.TemporaryDirectory() as td:
         src = os.path.join(td, "input" + suffix)
         with open(src, "wb") as fh:

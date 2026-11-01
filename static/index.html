@@ -270,12 +270,7 @@
       <input type="checkbox" id="oneLine" checked />
       Hiện 1 dòng
     </label>
-    <label style="display: inline-flex; align-items: center; gap: 6px; font-size: 13px;"
-           title="File MIDI chưa có bản nhạc để vẽ (chỉ có thời điểm bấm phím), nên khi chọn file sẽ tự chuẩn hóa với các option hiện tại để hiện bản nhạc ngay. Đổi option xong thì bấm Normalize để chạy lại.">
-      <input type="checkbox" id="autoMidi" checked />
-      Tự Normalize khi chọn file MIDI
-    </label>
-  </div>
+    </div>
 
   <div id="status"></div>
   <div id="command"></div>
@@ -822,16 +817,6 @@
       const file = input.files.length ? input.files[0] : null;
       const token = ++previewToken;
       if (!file) { clearScore(); return; }
-      if (currentKind() !== "xml") {
-        clearScore();
-        if ($("autoMidi") && $("autoMidi").checked) {
-          setStatus("File MIDI chưa có bản nhạc để vẽ, đang chuẩn hóa với các option hiện tại...");
-          applyNormalize();
-        } else {
-          setStatus("File MIDI chưa có bản nhạc để vẽ. Bấm Normalize để xem bản sạch.");
-        }
-        return;
-      }
       setStatus("Đang đọc bản gốc...");
       try {
         const form = new FormData();
@@ -847,7 +832,9 @@
         await renderAfter(data.xml);
         if (token !== previewToken) return;
         $("score-title").textContent = "Bản gốc (chưa normalize)";
-        const built = buildPreviewFromOsmd(data.bpm, data.xml);
+        const isMidi = data.input_kind === "midi";
+        cursorScale = (isMidi && data.ppq) ? data.ppq / TICKS_PER_QUARTER : 1;   // MIDI: cursor theo tick file gốc
+        const built = isMidi ? null : buildPreviewFromOsmd(data.bpm, data.xml);
         if (built) {
           data.midi = built.midi;           // MIDI dựng từ chính các bước cursor, có lặp: cursor luôn khớp nhạc
           cursorTicks = built.ticks;
@@ -1530,6 +1517,7 @@
       const kind = currentKind();
 
       previewToken++;
+      cursorScale = 1;
       stopPlayback();
       cursorHide();
       updatePlayButton();
@@ -1636,6 +1624,16 @@
       if (isTextEntry(e.target)) return;
       e.preventDefault();
     });
+
+    /* patch: MIDI preview - cursor theo tick của file MIDI gốc (ppq có thể khác 480) */
+    let cursorScale = 1;
+    const buildCursorMapBase = buildCursorMap;
+    buildCursorMap = function (xml) {
+      buildCursorMapBase(xml);
+      if (cursorScale !== 1 && cursorTicks.length) {
+        cursorTicks = cursorTicks.map(function (t) { return Math.round(t * cursorScale); });
+      }
+    };
 
     $("apply").addEventListener("click", applyNormalize);
 

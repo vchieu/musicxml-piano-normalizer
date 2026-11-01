@@ -8,6 +8,7 @@ Tài liệu này ghi lại các thay đổi quan trọng của project.
 
 ### Added
 
+- Web UI: chọn file MIDI hiện ngay bản gốc (chưa normalize) và phát đúng file MIDI gốc, giống MusicXML. `POST /preview` nhận cả `.mid/.midi` qua `midi_preview.py` (đọc nốt/tempo/số chỉ nhịp, làm tròn về lưới 32nd, dựng bằng `midi_to_musicxml.song_to_musicxml`); trả thêm `ppq` để cursor chạy theo tick file gốc. Bỏ ô "Tự Normalize khi chọn file MIDI".
 - MusicXML: chép đoạn lặp ra khi normalize (repeat kể cả `times`, nhà 1/nhà 2, D.C., D.S., coda, fine). Lyrics tự chỉnh theo lần lặp: lần k của một đoạn lặp lấy lời k, ghi lại thành lời 1 (không còn trùng lời 1 + lời 2). Tắt bằng `--no-expand-repeats` (CLI, `xml_regrid_piano.py`) hoặc bỏ chọn ô "Chép đoạn lặp ra" (web UI). MIDI không bị ảnh hưởng. `/preview` vẫn đọc tuyến tính.
 - Lyrics của MusicXML được giữ khi normalize (đường MusicXML -> MusicXML, `xml_regrid_piano.py` và web UI): `Note.lyric`, `note_lyrics()`, ghi `<lyric>` ở nốt đầu của mỗi hợp âm (không ghi ở phần nối tie).
 - Web UI: `POST /preview` trả bản gốc của MusicXML (xml + MIDI nghe thử). Chọn file MusicXML là bản gốc hiện ngay trên khuông chính (nghe thử, click để tua); bấm Normalize thì thay bằng bản sạch. Bỏ khung bản gốc cạnh bên.

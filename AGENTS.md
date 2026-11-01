@@ -308,7 +308,7 @@ tempo marking. `--min-dur` của script này tính bằng phách đen.
 ### `app.py` (web UI)
 
 - `GET /`: trả `static/index.html` (đường dẫn tính từ `Path(__file__).resolve().parent`).
-- `POST /preview`: chỉ MusicXML. Trả `xml` (bản gốc, bỏ namespace, để OSMD vẽ), `midi` (base64, một track, một tempo: nốt từ `xml_regrid.extract_notes_from_musicxml`, thời gian theo phách đen), `bpm`. UI gọi khi chọn file để hiện bản gốc trên khuông chính; `POST /normalize` thay nó bằng bản sạch.
+- `POST /preview`: MusicXML hoặc MIDI. MIDI: `midi_preview.preview_from_midi_bytes` (-> `midi_to_musicxml.song_to_musicxml`), `midi` là chính file gốc, thêm `ppq`. MusicXML: Trả `xml` (bản gốc, bỏ namespace, để OSMD vẽ), `midi` (base64, một track, một tempo: nốt từ `xml_regrid.extract_notes_from_musicxml`, thời gian theo phách đen), `bpm`. UI gọi khi chọn file để hiện bản gốc trên khuông chính; `POST /normalize` thay nó bằng bản sạch.
 - `POST /normalize`: form `file`, `beats`, `split`, `hand`, `split_chords`, `downbeat`, `max_bpm`, `fine`,
   `min_dur`, `lh_max`, `rh_max`, `drop_ornaments`, `simplify`. MIDI -> `load_midi_input`; XML ->
   `xml_regrid.extract_notes_from_musicxml` + `read_score_meta` + `max_bpm=90`, `min_dur=0` (đơn vị phách đen).
