@@ -2,9 +2,10 @@
 """
 midi_preview.py - bản gốc của một file MIDI để vẽ lên khuông (chưa normalize).
 
-Không tìm lưới / tempo như engine: chỉ đọc nốt + tempo map + số chỉ nhịp của file, cắt ô nhịp
-từ tick 0, rồi đưa cho midi_to_musicxml.song_to_musicxml. Để bản nhạc vẽ ra không bị chồng nốt,
-thời điểm nốt được làm tròn về lưới 32nd (theo tick, không phải giây) trước khi chuyển.
+Không tìm lưới / tempo như engine: đọc nốt + tempo map + MỌI thay đổi số chỉ nhịp của file, cắt ô nhịp
+từ tick 0 (mỗi ô theo số chỉ nhịp đang có hiệu lực), rồi đưa cho midi_to_musicxml.song_to_musicxml
+(song.bar_sigs = số chỉ nhịp của từng ô). Thời điểm nốt được làm tròn về lưới 32nd (theo tick) trước khi
+chuyển để bản nhạc không bị chồng nốt.
 
 Phần nghe thử dùng nguyên file MIDI gốc (trả lại base64), nên tiếng là bản chơi thật.
 """
@@ -53,7 +54,7 @@ def _read_meta(data):
     _fmt, _n, div = struct.unpack(">HHH", header[:6])
     if div & 0x8000:
         raise ValueError("MIDI dùng SMPTE time division, chưa hỗ trợ")
-    tempos, sig = set(), None
+    tempos, sigs = set(), set()
     for tag, body in chunks:
         if tag != b"MTrk":
             continue
@@ -62,15 +63,14 @@ def _read_meta(data):
                 continue
             if p[0] == 0x51 and len(p[1]) == 3:
                 tempos.add((t, int.from_bytes(p[1], "big")))
-            elif p[0] == 0x58 and len(p[1]) >= 2:
-                if sig is None or t < sig[0]:
-                    sig = (t, p[1][0], 1 << p[1][1])
-    return div, sorted(tempos), sig
+            elif p[0] == 0x58 and len(p[1]) >= 2 and p[1][0] > 0:
+                sigs.add((t, p[1][0], 1 << p[1][1]))
+    return div, sorted(tempos), sorted(sigs)
 
 
 def midi_to_song(data: bytes, split: str = "C4"):
     """MIDI bytes -> (song cho midi_to_musicxml, ppq, bpm đầu tiên)."""
-    div, tempos, sig = _read_meta(data)
+    div, tempos, sigs = _read_meta(data)
     clock = _Clock(tempos, div)
     with tempfile.TemporaryDirectory() as td:
         path = os.path.join(td, "in.mid")
@@ -78,10 +78,6 @@ def midi_to_song(data: bytes, split: str = "C4"):
             fh.write(data)
         inp = N.read_midi(path, N.note_name_to_midi(split))
 
-    # midi_to_musicxml chỉ hiểu ô nhịp theo phách đen: 6/8 -> 3 phách đen (hiện 3/4), x/8 lẻ -> 4/4
-    beats, beat_type = (sig[1], sig[2]) if sig else (4, 4)
-    bar_q = beats * 4 // beat_type if (beats * 4) % beat_type == 0 and beats > 0 else 4
-    bar_ticks = bar_q * div
     grid = div // 8 if div % 8 == 0 else (div // 4 if div % 4 == 0 else div)
 
     seen, notes, last = set(), [], 0
@@ -100,15 +96,31 @@ def midi_to_song(data: bytes, split: str = "C4"):
     if not notes:
         raise ValueError("file MIDI không có nốt nào")
 
-    nbars = max(2, -(-last // bar_ticks))       # ít nhất 2 ô nhịp để converter tính được độ dài ô nhịp chuẩn
-    bar_times = [clock.to_sec(k * bar_ticks) for k in range(nbars)]
+    # Ô nhịp: mỗi ô dùng số chỉ nhịp có hiệu lực tại tick đầu ô (đổi giữa ô thì có hiệu lực từ ô kế)
+    sig_ticks = [s[0] for s in sigs]
+
+    def sig_at(tick):
+        k = bisect.bisect_right(sig_ticks, tick) - 1
+        return (sigs[k][1], sigs[k][2]) if k >= 0 else (4, 4)
+
+    starts, bar_sigs, tick = [], [], 0
+    while True:
+        beats, bt = sig_at(tick)
+        starts.append(clock.to_sec(tick))
+        bar_sigs.append((beats, bt))
+        tick += max(1, beats * 4 * div // bt)
+        if tick >= last:
+            break
+
     key_fifths = inp.key_fifths if inp.key_fifths is not None else N.estimate_key(notes)
     song = SimpleNamespace(
         notes=notes,
-        bar_times=bar_times,
-        time_signature=(bar_q, 4),
+        bar_times=starts,
+        bar_sigs=bar_sigs,
+        bar_end=clock.to_sec(tick),
+        time_signature=bar_sigs[0],
         key_fifths=key_fifths,
-        duration=clock.to_sec(nbars * bar_ticks),
+        duration=clock.to_sec(tick),
     )
     bpm = 60e6 / tempos[0][1] if tempos else 120.0
     return song, div, bpm
@@ -117,9 +129,8 @@ def midi_to_song(data: bytes, split: str = "C4"):
 def preview_from_midi_bytes(data: bytes, split: str = "C4") -> dict:
     """Kết quả cho POST /preview khi input là MIDI."""
     song, ppq, bpm = midi_to_song(data, split)
-    xml = M2X.song_to_musicxml(song)
     return {
-        "xml": xml,
+        "xml": M2X.song_to_musicxml(song),
         "midi": base64.b64encode(data).decode("ascii"),   # nghe đúng file gốc
         "bpm": bpm,
         "ppq": ppq,                                       # UI đổi tick của bản nhạc (480/phách đen) sang tick file gốc

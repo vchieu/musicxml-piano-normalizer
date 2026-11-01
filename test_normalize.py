@@ -885,3 +885,29 @@ def test_midi_preview_keeps_original_midi(tmp_path):
     root = ET.fromstring(out["xml"])
     assert root.tag == "score-partwise"
     assert len(root.findall("part/measure")) >= 6
+
+
+def test_midi_preview_follows_time_signature_changes(tmp_path):
+    import struct
+    import midi_preview as MP
+    bars = [(4, 4), (4, 4), (5, 4), (3, 8), (4, 4)]
+    ppq = N.PPQ
+    cond = [(0, 0, N._meta(0x51, (500000).to_bytes(3, "big")))]
+    tick = 0
+    for i, (b, d) in enumerate(bars):
+        if i == 0 or bars[i - 1] != (b, d):
+            cond.append((tick, 1, N._meta(0x58, bytes([b, d.bit_length() - 1, 24, 8]))))
+        tick += b * 4 * ppq // d
+    ev = [(0, 0, bytes([0xC0, 0]))]
+    for k in range(tick // (ppq // 2)):
+        a = k * (ppq // 2)
+        ev.append((a, 2, bytes([0x90, 72, 80])))
+        ev.append((a + ppq // 2, 0, bytes([0x80, 72, 0])))
+    data = b"MThd" + struct.pack(">IHHH", 6, 1, 2, ppq) + N._track(cond) + N._track(ev)
+    root = ET.fromstring(MP.preview_from_midi_bytes(data)["xml"])
+    ms = root.findall("part/measure")
+    assert len(ms) == 5
+    got = [(m.get("number"), m.findtext("attributes/time/beats"), m.findtext("attributes/time/beat-type"))
+           for m in ms if m.find("attributes/time") is not None]
+    assert got == [("1", "4", "4"), ("3", "5", "4"), ("4", "3", "8"), ("5", "4", "4")]
+    assert ms[3].findtext("attributes/divisions") == str(2 * ppq)       # 3/8: divisions gấp đôi để cursor/tick đúng
