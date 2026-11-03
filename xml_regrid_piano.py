@@ -148,7 +148,7 @@ def extract_notes_from_musicxml(path, split_midi, hand="auto", split_chords=Fals
             continue
 
         # Độ dài ô nhịp, tính bằng phách đen (divisions của mỗi part có thể khác nhau).
-        ends_q = [st.get("measure_end", 0) / max(1, st["divisions"]) for st in states]
+        ends_q = [states[pi].get("measure_end", 0) / max(1, states[pi]["divisions"]) for pi, _ in parsed]
         nominal_q = max(N.expected_duration(st) / max(1, st["divisions"]) for st in states)
         end_q = max(ends_q, default=0)
         measure_len = end_q if implicit and 0 < end_q < nominal_q else max(nominal_q, end_q)
